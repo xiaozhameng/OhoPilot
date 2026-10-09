@@ -10,9 +10,13 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
-import litellm
-
 from ..config import Config
+
+# 让 LiteLLM 直接用内置的模型价格表，不要每次启动都联网拉取
+# （国内网络下这一步会卡几秒并打印告警，纯属噪音）
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+import litellm  # noqa: E402  必须在设置上面的环境变量之后导入
 
 # 各家 provider 参数不一致时，自动丢掉不支持的参数而不是直接报错
 litellm.drop_params = True

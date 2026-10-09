@@ -15,20 +15,18 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Confirm
 
-from .config import Config
-from .core import events as ev
+from .core.agent import Approver
 from .core.llm import describe, has_credentials
 from .runtime import Runtime, build_runtime
 
 console = Console()
 
 
-def _approver_factory() -> object:
-    """CLI 下的审批：危险操作逐条问用户。"""
+def _interactive_approver() -> Approver:
+    """交互式：危险操作逐条问用户。"""
 
     async def approver(name: str, arguments: dict, reason: str) -> bool:
         console.print()
@@ -39,10 +37,21 @@ def _approver_factory() -> object:
                 border_style="yellow",
             )
         )
-        answer = await asyncio.to_thread(
-            Confirm.ask, "  允许执行吗？", default=False
-        )
+        answer = await asyncio.to_thread(Confirm.ask, "  允许执行吗？", default=False)
         return bool(answer)
+
+    return approver
+
+
+def _headless_approver() -> Approver:
+    """非交互（oho run / 脚本调用）：放行，但逐条写进 stderr 留痕。
+
+    注意：shell 的硬禁止清单不受这里影响，危险命令依然会被直接拒绝。
+    """
+
+    async def approver(name: str, arguments: dict, reason: str) -> bool:
+        print(f"[approve] {name} {arguments} — {reason}", file=sys.stderr)
+        return True
 
     return approver
 
@@ -107,8 +116,8 @@ def cmd_doctor(rt: Runtime) -> int:
     import importlib.util
 
     has_server = importlib.util.find_spec("fastapi") is not None
-    console.print(f"服务端    {'已安装 fastapi' if has_server else '未安装（pip install -e \".[server]\" 后可开）'}")
-
+    server_hint = '已安装 fastapi' if has_server else '未安装（pip install -e ".\\[server]" 后可开）'
+    console.print(f"服务端    {server_hint}")
     return 0 if ok else 1
 
 
@@ -171,7 +180,7 @@ def cmd_serve(rt: Runtime) -> int:
     try:
         import uvicorn
     except ImportError:
-        console.print("[red]未安装服务端依赖。[/] 先执行：pip install -e \".[server]\"")
+        console.print('[red]未安装服务端依赖。[/] 先执行：pip install -e ".\\[server]"')
         return 1
 
     from .server.app import create_app
@@ -207,7 +216,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     workspace = Path(args.cwd).expanduser() if args.cwd else None
-    rt = build_runtime(workspace, approver=_approver_factory())  # type: ignore[arg-type]
+    # 非交互模式（run / 脚本）用无头审批，交互模式逐条确认
+    approver = _headless_approver() if args.command == "run" else _interactive_approver()
+    rt = build_runtime(workspace, approver=approver)
 
     try:
         if args.command == "doctor":
