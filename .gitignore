@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# 环境与密钥：绝不入库
+.env
+*.key
+!*.key.example
+
+# 本地运行时数据
+*.db
+*.db-journal
+.ohopilot/
+logs/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
