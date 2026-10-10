@@ -18,10 +18,20 @@ from ohopilot.tools.web import html_to_text
 
 
 @pytest.fixture()
-def cfg(tmp_path: Path) -> Config:
+def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Config:
+    """给每个测试一套完全隔离的目录。
+
+    关键点：build_runtime() 内部会自己调 Config.load()，而 Config.load() 读的是
+    环境变量 OHOPILOT_HOME。所以必须先把 OHOPILOT_HOME 指到 tmp_path，
+    否则测试会往用户真实的 ~/.ohopilot 里写数据库和记忆文件。
+    """
     home = tmp_path / "home"
     workspace = tmp_path / "ws"
     workspace.mkdir()
+
+    monkeypatch.setenv("OHOPILOT_HOME", str(home))
+    monkeypatch.delenv("OHOPILOT_API_KEY", raising=False)
+
     config = Config(
         model="openai/test-model",
         api_base="http://127.0.0.1:1/v1",
@@ -41,6 +51,24 @@ def test_config_scaffolds_home(cfg: Config) -> None:
     assert cfg.skills_dir.is_dir()
     assert cfg.memory_file.exists()
     assert (cfg.skills_dir / "weekly-report.md").exists()
+
+
+def test_runtime_never_touches_real_home(cfg: Config) -> None:
+    """回归测试：build_runtime 必须待在隔离目录里，不许碰用户真实的 ~/.ohopilot。
+
+    这条是防回归用的——之前测试确实往真实主目录里写了 3 条会话记录。
+    """
+    real_home = Path.home() / ".ohopilot"
+    rt = build_runtime(cfg.workspace)
+    try:
+        assert rt.cfg.home != real_home, "build_runtime 用了真实主目录"
+        assert str(rt.cfg.home).startswith(str(cfg.workspace.parent)), (
+            f"配置目录跑到隔离区之外了：{rt.cfg.home}"
+        )
+        assert rt.cfg.db_path.exists()
+        assert str(rt.cfg.db_path).startswith(str(cfg.workspace.parent))
+    finally:
+        rt.close()
 
 
 def test_registry_has_expected_tools(cfg: Config) -> None:
