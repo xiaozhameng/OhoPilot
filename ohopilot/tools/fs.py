@@ -17,8 +17,15 @@ MAX_READ_BYTES = 200_000
 class _FsTool(Tool):
     """文件类工具的共用基类：拿到配置，并把路径解析到工作目录下。"""
 
+    #: 硬禁止清单：读写都不许碰路径中的这些段。
+    #: 写 .env 会毁掉配置；读 .env 会把密钥送进模型对话（10b 实测泄露过），同样要禁
+    PROTECTED = {".env", ".git"}
+
     def __init__(self, cfg: Config):
         self.cfg = cfg
+
+    def _is_protected(self, path: Path) -> bool:
+        return any(part in self.PROTECTED for part in path.parts)
 
     def _resolve(self, raw: str) -> tuple[Path, bool]:
         """把用户给的路径变成绝对路径，并判断是否在工作根目录内。"""
@@ -52,6 +59,8 @@ class ReadFileTool(_FsTool):
 
     async def run(self, path: str, offset: int = 1, limit: int = 500, **_: Any) -> ToolResult:
         target, _ = self._resolve(path)
+        if self._is_protected(target):
+            return ToolResult.fail(f"禁止读取受保护路径：{target}")
         if not target.exists():
             return ToolResult.fail(f"文件不存在：{target}")
         if target.is_dir():
@@ -93,9 +102,6 @@ class WriteFileTool(_FsTool):
     #: 声明为危险操作：_execute() 会为它发 approval_request 事件
     requires_approval = True
 
-    #: 硬禁止清单：路径的任意一段命中就直接拒绝，不给审批机会
-    DENYLIST = {".env", ".git"}
-
     async def run(self, path: str, content: str = "", **_: Any) -> ToolResult:
         target, inside = self._resolve(path)
 
@@ -103,8 +109,8 @@ class WriteFileTool(_FsTool):
         if not inside:
             return ToolResult.fail(f"路径超出工作目录，已拒绝：{target}")
 
-        # 防线二：硬禁止清单。workspace/.env 和 workspace/sub/.env 都会被拦住
-        if any(part in self.DENYLIST for part in target.parts):
+        # 防线二：硬禁止清单（基类共用）。workspace/.env 和 workspace/sub/.env 都会被拦住
+        if self._is_protected(target):
             return ToolResult.fail(f"禁止写入受保护路径：{target}")
 
         try:

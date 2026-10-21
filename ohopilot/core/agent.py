@@ -6,7 +6,7 @@ CLI / HTTP 服务端 / 将来的手机端都只消费这些事件。
 from typing import Callable, Any, Awaitable, AsyncIterator
 
 from ohopilot.config import Config
-from ohopilot.core.llm import AssistantTurn, stream_chat
+from ohopilot.core.llm import AssistantTurn, LLMError, stream_chat
 from ohopilot.tools.base import ToolRegistry
 
 from . import events as ev
@@ -50,11 +50,17 @@ class Agent:
 
         for _round in range(self.cfg.max_tool_rounds):
             turn: AssistantTurn | None = None
-            async for kind, payload in stream_chat(self.cfg, messages,self.registry.schemas()):
-                if kind == "text":
-                    yield ev.text(payload)
-                else :
-                    turn = payload
+            try:
+                async for kind, payload in stream_chat(self.cfg, messages, self.registry.schemas()):
+                    if kind == "text":
+                        yield ev.text(payload)
+                    else:
+                        turn = payload
+            except LLMError as exc:
+                # 网络 / 密钥 / 模型侧错误都从这里出：转成 error 事件，
+                # 让界面优雅提示，而不是把整个交互循环炸掉
+                yield ev.error(str(exc))
+                return
 
             if turn is None: # 理论上不会发生
                 yield ev.error("模型没有返回任何内容")

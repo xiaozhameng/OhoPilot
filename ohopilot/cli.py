@@ -21,6 +21,14 @@ from ohopilot.tools.fs import build_fs_tools
 
 console = Console()
 
+#: 终端展示用：参数太长就截断。既防刷屏，也防敏感内容（如 .env 内容）整段上屏
+BRIEF_LIMIT = 160
+
+
+def _brief(arguments: dict[str, Any], limit: int = BRIEF_LIMIT) -> str:
+    text = str(arguments)
+    return text if len(text) <= limit else text[:limit] + "…[已截断]"
+
 
 async def terminal_approver(name: str, arguments: dict[str, Any], reason: str) -> bool:
     """终端里的审批员：把危险操作亮出来，等用户敲 y/n。
@@ -30,7 +38,7 @@ async def terminal_approver(name: str, arguments: dict[str, Any], reason: str) -
     """
     console.print()
     console.print(f"[yellow]⚠ 需要确认[/yellow] {name} 想执行一个有风险的操作：{reason}")
-    console.print(f"  参数：{arguments}")
+    console.print(f"  参数：{_brief(arguments)}")
     try:
         answer = input("  允许执行吗？(y = 允许，其他任意键 = 拒绝) › ").strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -63,7 +71,7 @@ async def ask(agent: Agent, question: str, history: list[dict[str, Any]]) -> Non
         elif kind == "tool_call":
             console.print()  # 先换行，免得和流式文字粘在同一行
             console.print(
-                f"  · 调用 {event.data['name']} {event.data['arguments']}",
+                f"  · 调用 {event.data['name']} {_brief(event.data['arguments'])}",
                 style="dim",
                 markup=False,
             )
