@@ -1,0 +1,119 @@
+"""agent 主循环：模型 ⇄ 工具，直到模型不再需要工具。
+
+这是整个软件的心脏。对外只 yield events 里定义的事件，
+CLI / HTTP 服务端 / 将来的手机端都只消费这些事件。
+"""
+from typing import Callable, Any, Awaitable, AsyncIterator
+
+from ohopilot.config import Config
+from ohopilot.core.llm import AssistantTurn, stream_chat
+from ohopilot.tools.base import ToolRegistry
+
+from . import events as ev
+
+#: 审批函数：传入 工具名 / 参数 / 理由，返回 是否允许
+Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
+
+def _system_prompt(cfg: Config, tool_names: list[str]) -> str:
+    return (
+        "你是 OhoPilot，一个跑在用户自己电脑上的中文办公助手。\n"
+        f"当前工作目录：{cfg.workspace}\n"
+        f"可用工具：{', '.join(tool_names)}\n"
+        "规则：\n"
+        "1. 需要操作文件、执行命令时，优先调用工具，不要凭空编造内容。\n"
+        "2. 相对路径都相对当前工作目录。\n"
+        "3. 用简体中文回答。"
+    )
+
+class Agent:
+    def __init__(
+        self,
+        cfg: Config,
+        registry: ToolRegistry,
+        approver: Approver | None = None,
+    ) -> None:
+        self.cfg = cfg
+        self.registry = registry
+        self.approver = approver
+
+    async def run(
+            self,
+            question: str,
+            history: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[ev.Event]:
+        """跑一轮完整问答。history 由调用方维护（第 9 步接入会话库）。"""
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": _system_prompt(self.cfg, self.registry.names())},
+            *(history or []),
+            {"role":"user", "content": question},
+        ]
+
+        for _round in range(self.cfg.max_tool_rounds):
+            turn: AssistantTurn | None = None
+            async for kind, payload in stream_chat(self.cfg, messages,self.registry.schemas()):
+                if kind == "text":
+                    yield ev.text(payload)
+                else :
+                    turn = payload
+
+            if turn is None: # 理论上不会发生
+                yield ev.error("模型没有返回任何内容")
+                return
+
+            # 把模型这一轮说的话（含工具调用请求）追加进对话
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": turn.text or None
+            }
+
+            if turn.tool_calls:
+                assistant_msg["tool_calls"] = [tc.to_message_part() for tc in turn.tool_calls]
+            messages.append(assistant_msg)
+
+            if not turn.tool_calls:
+                yield ev.usage(turn.prompt_tokens, turn.completion_tokens, turn.total_tokens)
+                yield ev.done("")
+                return
+
+            # 逐个执行工具请求
+            # 逐个执行工具请求（_execute 内部已经广播 tool_call，这里不要再 yield 一次）
+            async for event in self._execute(turn.tool_calls):
+                yield event
+                # 工具结果顺手回填进对话（content / id 就在事件里）
+                if event.type == "tool_result":
+                    messages.append(
+                        {"role": "tool", "tool_call_id": event.data["id"],
+                         "content": event.data["content"]}
+                    )
+
+            yield ev.usage(turn.prompt_tokens, turn.completion_tokens, turn.total_tokens)
+
+        # 轮次用尽还没结束 → 防死循环烧钱
+        yield ev.error(f"已达工具调用轮次上限（{self.cfg.max_tool_rounds}），强制停止")
+
+    async def _execute(
+            self, tool_calls: list[Any]
+    ) -> AsyncIterator[ev.Event]:
+        """执行一批工具调用，广播全过程。"""
+        from ..tools.base import ToolResult
+
+        for tc in tool_calls:
+            yield ev.tool_call(tc.id, tc.name, tc.arguments)
+
+            tool = self.registry.get(tc.name)
+            if tool is None:
+                result = ToolResult.fail(f"未知工具：{tc.name}")
+            else:
+                need, reason = tool.needs_approval(tc.arguments)
+                if need:
+                    yield ev.approval_request(tc.id, tc.name, tc.arguments, reason)
+                    allowed = False
+                    if self.approver is not None:
+                        allowed = await self.approver(tc.name, tc.arguments, reason)
+                    if not allowed:
+                        result = ToolResult.fail("用户拒绝了该操作")
+                        yield ev.tool_result(tc.id, tc.name, result.content, True)
+                        continue
+                result = await tool.safe_run(tc.arguments)
+
+            yield ev.tool_result(tc.id, tc.name, result.content, result.is_error)
