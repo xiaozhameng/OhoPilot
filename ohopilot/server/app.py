@@ -17,11 +17,13 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ohopilot.config import Config
@@ -29,6 +31,9 @@ from ohopilot.core import events as ev
 from ohopilot.core.llm import has_credentials
 from ohopilot.runtime import Runtime
 from ohopilot.server.approvals import ApprovalBroker
+
+#: 前端构建产物（web/ 里 npm run build 会输出到这里）
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -56,6 +61,24 @@ class ApprovalAnswer(BaseModel):
     allow: bool
 
 
+class SettingsBody(BaseModel):
+    """只允许改这两项：其余（home/审批超时/轮次上限）属于进程级配置，改了下一次启动才生效，
+    放在界面上改会让人以为立刻生效，不如不给入口。"""
+
+    model: str | None = Field(default=None, description="模型名，如 deepseek-v4-flash")
+    workspace: str | None = Field(default=None, description="工作目录，必须是已存在的绝对路径")
+
+
+def _health(rt: Runtime, broker: ApprovalBroker) -> dict[str, Any]:
+    return {
+        "ok": has_credentials(rt.cfg),
+        "model": rt.cfg.model,
+        "workspace": str(rt.cfg.workspace),
+        "tools": rt.registry.names(),
+        "pending_approvals": broker.pending_count,
+    }
+
+
 def _sse(event: ev.Event) -> str:
     """一个事件 = 一条 SSE 消息。
 
@@ -79,14 +102,31 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health(request: Request) -> dict[str, Any]:
+        return _health(request.app.state.rt, request.app.state.broker)
+
+    @app.post("/settings")
+    async def update_settings(body: SettingsBody, request: Request) -> dict[str, Any]:
+        """改运行时配置。改的是 rt.cfg 这个**同一个对象**，所以工具立刻就能看到新值：
+        fs/shell 的边界读的是 cfg.workspace，模型名读的是 cfg.model。"""
         rt: Runtime = request.app.state.rt
-        return {
-            "ok": has_credentials(rt.cfg),
-            "model": rt.cfg.model,
-            "workspace": str(rt.cfg.workspace),
-            "tools": rt.registry.names(),
-            "pending_approvals": request.app.state.broker.pending_count,
-        }
+
+        if body.model is not None:
+            model = body.model.strip()
+            if not model:
+                raise HTTPException(status_code=400, detail="模型名不能为空")
+            rt.cfg.model = model
+
+        if body.workspace is not None:
+            raw = body.workspace.strip()
+            if not raw:
+                raise HTTPException(status_code=400, detail="工作目录不能为空")
+            # 只接受已存在的目录：写错一个字母就让所有文件工具失效，错误要当场报出来
+            target = Path(raw).expanduser()
+            if not target.is_dir():
+                raise HTTPException(status_code=400, detail=f"目录不存在：{target}")
+            rt.cfg.workspace = target.resolve()
+
+        return _health(rt, request.app.state.broker)
 
     @app.get("/sessions")
     async def list_sessions(request: Request, limit: int = 20) -> dict[str, Any]:
@@ -149,6 +189,24 @@ def create_app() -> FastAPI:
                 detail="没有等待中的审批：可能已超时、已回答，或 call_id 不对",
             )
         return {"resolved": True, "call_id": call_id, "allow": body.allow}
+
+    # ---- 前端（可选）----
+    # 构建过才挂载：开发阶段前端跑在 vite 的 5173，后端不需要知道它的存在。
+    # 只挂 /assets 而不是把 StaticFiles 挂到 "/" —— 挂根路径会把 /health 这些接口一起吞掉。
+    if (STATIC_DIR / "index.html").is_file():
+        assets = STATIC_DIR / "assets"
+        if assets.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets), name="assets")
+
+        @app.get("/", include_in_schema=False)
+        async def index() -> FileResponse:
+            return FileResponse(STATIC_DIR / "index.html")
+
+    else:
+
+        @app.get("/", include_in_schema=False)
+        async def no_frontend() -> dict[str, str]:
+            return {"detail": "前端还没构建。在 web/ 目录跑 npm install && npm run build"}
 
     return app
 

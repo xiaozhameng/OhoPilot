@@ -22,3 +22,10 @@ logs/
 .vscode/
 .idea/
 .DS_Store
+
+# 前端：只忽略依赖与缓存，构建产物 ohopilot/server/static/ 要入库——
+# 这样拿到仓库的人 pip install 之后直接 oho-server 就有界面，不必装 node
+web/node_modules/
+web/dist/
+web/.vite/
+*.tsbuildinfo
