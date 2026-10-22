@@ -32,11 +32,17 @@ def _brief(arguments: dict[str, Any], limit: int = BRIEF_LIMIT) -> str:
     return text if len(text) <= limit else text[:limit] + "…[已截断]"
 
 
-async def terminal_approver(name: str, arguments: dict[str, Any], reason: str) -> bool:
+async def terminal_approver(
+    call_id: str,
+    name: str,
+    arguments: dict[str, Any],
+    reason: str,
+) -> bool:
     """终端里的审批员：把危险操作亮出来，等用户敲 y/n。
 
     决策权在内核（要不要问），交互在界面（怎么问）——
     服务端只要换一个实现（推 HTTP 给前端弹窗），agent 不用动。
+    call_id 在这里用不上（终端同时只有一个弹窗），HTTP 版本靠它对应请求。
     """
     console.print()
     console.print(f"[yellow]⚠ 需要确认[/yellow] {name} 想执行一个有风险的操作：{reason}")

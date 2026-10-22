@@ -10,6 +10,7 @@ import sqlite3
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
 class SessionStore:
@@ -119,6 +120,36 @@ class SessionStore:
             (session_id, after_id, limit),
         ).fetchall()
         return [(int(r[0]), r[1], r[2]) for r in rows]
+
+    def recent_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+        """最近的会话列表：会话号 / 最后一条消息时间 / 消息条数 / 首句。
+
+        给服务端的会话列表用（将来桌面端、手机端的首页就是它）。
+        首句取该会话最早那条 user 消息，当标题最直观。
+        """
+        rows = self._conn.execute(
+            "SELECT session_id, MAX(created_at) AS last_at, COUNT(*) AS n "
+            "FROM messages GROUP BY session_id ORDER BY last_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+        sessions: list[dict[str, Any]] = []
+        for session_id, last_at, count in rows:
+            first = self._conn.execute(
+                "SELECT content FROM messages WHERE session_id = ? AND role = 'user' "
+                "ORDER BY id ASC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            title = (first[0] if first else "")[:60].replace("\n", " ")
+            sessions.append(
+                {
+                    "session_id": session_id,
+                    "title": title,
+                    "updated_at": last_at,
+                    "messages": int(count),
+                }
+            )
+        return sessions
 
     def close(self) -> None:
         self._conn.close()

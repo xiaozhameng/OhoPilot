@@ -65,6 +65,9 @@ class Config:
     # 服务端
     host: str = "127.0.0.1"
     port: int = 8737
+    # HTTP 审批等待上限：前端迟迟不点「允许/拒绝」时，到点自动拒绝。
+    # 服务端不能像终端那样无限等，否则一次请求会永久挂着
+    approval_timeout: int = 180
 
     # 由home 派生出来的路径，不单独存储
     @property
@@ -103,4 +106,5 @@ class Config:
             summary_keep=_get_int("SUMMARY_KEEP", 8),
             host=_get("HOST", "127.0.0.1"),
             port=_get_int("PORT", 8737),
+            approval_timeout=_get_int("APPROVAL_TIMEOUT", 180),
         )

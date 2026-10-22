@@ -13,8 +13,10 @@ from ohopilot.tools.base import ToolRegistry
 
 from . import events as ev
 
-#: 审批函数：传入 工具名 / 参数 / 理由，返回 是否允许
-Approver = Callable[[str, dict[str, Any], str], Awaitable[bool]]
+#: 审批函数：传入 调用id / 工具名 / 参数 / 理由，返回 是否允许。
+#: 带上 call_id 是为了让「终端之外」的界面能对应上：HTTP 客户端收到
+#: approval_request 事件后，得指明自己在回复哪一次调用。
+Approver = Callable[[str, str, dict[str, Any], str], Awaitable[bool]]
 
 def _system_prompt(cfg: Config, tool_names: list[str]) -> str:
     parts = [
@@ -143,7 +145,7 @@ class Agent:
                     yield ev.approval_request(tc.id, tc.name, tc.arguments, reason)
                     allowed = False
                     if self.approver is not None:
-                        allowed = await self.approver(tc.name, tc.arguments, reason)
+                        allowed = await self.approver(tc.id, tc.name, tc.arguments, reason)
                     if not allowed:
                         result = ToolResult.fail("用户拒绝了该操作")
                         yield ev.tool_result(tc.id, tc.name, result.content, True)

@@ -1,0 +1,172 @@
+"""HTTP + SSE 服务端：让内核被终端之外的东西使用。
+
+为什么是 SSE 而不是 WebSocket：
+  这一轮问答的数据流是**单向**的（服务端持续推事件，客户端只管"开始"和"审批"），
+  SSE 就是「一个不结束的 HTTP 响应」，浏览器 EventSource、curl、任何语言都直接能读，
+  不需要握手、心跳、重连协议。审批的回传走普通 POST，够用且简单。
+
+三条必须守住的约束（都是第 14 步埋下的坑）：
+  1. 一个长驻事件循环：Runtime 在 lifespan 里建、关闭时 close()。
+     绝不能在请求里新建 loop——SQLite 连接、子进程 watcher 都绑在创建它的 loop 上。
+  2. 同一会话串行：两个请求同时改一个会话的历史，顺序会交错。
+     用 per-session 锁，第二次请求等第一次跑完。
+  3. 审批不许阻塞循环：ApprovalBroker 用 Future 挂起「这个协程」，不是挂住整个循环。
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from ohopilot.config import Config
+from ohopilot.core import events as ev
+from ohopilot.core.llm import has_credentials
+from ohopilot.runtime import Runtime
+from ohopilot.server.approvals import ApprovalBroker
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """进程级生命周期：启动建 Runtime，退出时关会话库。"""
+    cfg = Config.load()
+    broker = ApprovalBroker(timeout=cfg.approval_timeout)
+    app.state.cfg = cfg
+    app.state.broker = broker
+    app.state.rt = Runtime.create(approver=broker.approver, cfg=cfg)
+    #: session_id → Lock。惰性创建，不用预分配
+    app.state.locks = {}
+    try:
+        yield
+    finally:
+        app.state.rt.close()
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, description="用户这一轮的问题")
+    session_id: str | None = Field(default=None, description="不传就开新会话")
+
+
+class ApprovalAnswer(BaseModel):
+    allow: bool
+
+
+def _sse(event: ev.Event) -> str:
+    """一个事件 = 一条 SSE 消息。
+
+    只写 data 不写 event: 字段，是刻意的：一旦用了 event: 名字，
+    浏览器 EventSource 的 onmessage 就不再触发，必须给每种类型注册监听器。
+    data 里带 type 字段，前端一个 onmessage 就能分派。
+    """
+    return f"data: {json.dumps(event.to_dict(), ensure_ascii=False)}\n\n"
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="OhoPilot", version="0.1.0", lifespan=lifespan)
+
+    # 只放行本机来源：这个服务能执行 shell，不能让任意网页跨域调它
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/health")
+    async def health(request: Request) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        return {
+            "ok": has_credentials(rt.cfg),
+            "model": rt.cfg.model,
+            "workspace": str(rt.cfg.workspace),
+            "tools": rt.registry.names(),
+            "pending_approvals": request.app.state.broker.pending_count,
+        }
+
+    @app.get("/sessions")
+    async def list_sessions(request: Request, limit: int = 20) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        return {"sessions": rt.store.recent_sessions(limit)}
+
+    @app.get("/sessions/{session_id}")
+    async def session_detail(session_id: str, request: Request) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        history = rt.load_history(session_id)
+        if not history:
+            raise HTTPException(status_code=404, detail=f"会话不存在或为空：{session_id}")
+        return {"session_id": session_id, "messages": history}
+
+    @app.post("/chat")
+    async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
+        rt: Runtime = request.app.state.rt
+        if not has_credentials(rt.cfg):
+            raise HTTPException(status_code=503, detail="服务端没有配置模型密钥")
+
+        question = body.message.strip()
+        if not question:
+            raise HTTPException(status_code=422, detail="message 不能为空白")
+        session_id = body.session_id or rt.new_session()
+
+        async def stream() -> AsyncIterator[str]:
+            # 锁必须在生成器里拿：拿到之前不占住请求，前端能立刻看到响应头
+            lock: asyncio.Lock = request.app.state.locks.setdefault(session_id, asyncio.Lock())
+            async with lock:
+                # 每次现读历史：上一次请求可能刚把它写长
+                history = rt.load_history(session_id)
+                try:
+                    async for event in rt.ask(session_id, question, history):
+                        yield _sse(event)
+                except asyncio.CancelledError:
+                    # 客户端断开（关页面/断网）：让异常继续向上，别吞
+                    raise
+                except Exception as exc:  # noqa: BLE001 —— 兜住一切，别让前端收到空响应
+                    yield _sse(ev.error(f"服务端异常：{exc}"))
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",   # 反代（nginx）别缓冲，否则流式变成一次性
+                "X-Session-Id": session_id,  # 新会话的 id 从这里给前端
+            },
+        )
+
+    @app.post("/approvals/{call_id}")
+    async def answer_approval(
+        call_id: str, body: ApprovalAnswer, request: Request
+    ) -> dict[str, Any]:
+        broker: ApprovalBroker = request.app.state.broker
+        if not broker.resolve(call_id, body.allow):
+            raise HTTPException(
+                status_code=404,
+                detail="没有等待中的审批：可能已超时、已回答，或 call_id 不对",
+            )
+        return {"resolved": True, "call_id": call_id, "allow": body.allow}
+
+    return app
+
+
+def main() -> None:
+    """`oho-server` 或 `python -m ohopilot.server` 的入口。"""
+    import uvicorn
+
+    cfg = Config.load()
+    # 用工厂字符串而不是传 app 对象：uvicorn 的 reload / workers 需要能自己 import
+    uvicorn.run(
+        "ohopilot.server.app:create_app",
+        factory=True,
+        host=cfg.host,
+        port=cfg.port,
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    main()

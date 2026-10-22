@@ -41,7 +41,11 @@
 - [x] 14. `ohopilot/runtime.py` —— 装配层（出现第二个客户端时才需要它）
   - 边界：Runtime 管「一轮问答怎么编排」（压缩摘要 / 跑 agent / 双写存储），入口只管「怎么显示」和「怎么问人」（approver 传进来）
   - 新增 `notice` 事件：给界面的提示（如「已压缩成摘要」），不落库、不进 prompt
-- [ ] 15. `ohopilot/server/app.py` —— HTTP + SSE 服务端（为桌面端 / 手机端铺路）
+- [x] 15. `ohopilot/server/app.py` —— HTTP + SSE 服务端（为桌面端 / 手机端铺路）
+  - 端点：`GET /health`、`GET /sessions`、`GET /sessions/{id}`、`POST /chat`(SSE)、`POST /approvals/{call_id}`
+  - 审批从终端 y/n 换成 `ApprovalBroker`：Future 挂起协程 + HTTP 回调唤醒，超时按拒绝
+  - `Approver` 签名补上 `call_id`（终端无所谓，HTTP 必须能对应是哪次调用）
+  - 一个长驻事件循环（Runtime 在 lifespan 建/关）+ 每会话一把锁（同会话请求串行）
 - [ ] 16. 测试与文档
 
 ## 参考实现在哪

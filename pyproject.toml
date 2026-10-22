@@ -23,8 +23,10 @@ server = ["fastapi>=0.110", "uvicorn>=0.29"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 # 关键一行：oho = "ohopilot.cli:main" 读作「装完后生成一个叫 oho 的命令，它执行 ohopilot/cli.py 里的 main 函数」
+# oho-server 同理，起的是 HTTP+SSE 服务端（需要先装 .[server]）
 [project.scripts]
 oho = "ohopilot.cli:main"
+oho-server = "ohopilot.server.app:main"
 
 # 告诉 hatchling「要打包的是 ohopilot 这个目录」，免得它自己去猜
 [tool.hatch.build.targets.wheel]

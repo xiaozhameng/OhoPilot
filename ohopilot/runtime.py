@@ -40,13 +40,20 @@ class Runtime:
     # ---------- 装配 ----------
 
     @classmethod
-    def create(cls, approver: Approver | None = None) -> "Runtime":
+    def create(
+        cls,
+        approver: Approver | None = None,
+        cfg: Config | None = None,
+    ) -> "Runtime":
         """读配置 → 建目录 → 注册工具 → 建 Agent → 打开会话库。
 
         approver 由入口传入：终端是 y/n 回调，服务端是 HTTP 弹窗回调。
         不传就是「没人能批准」，Agent 那边会把所有危险操作默认拒绝。
+
+        cfg 可以外部传（服务端要先读配置才能决定审批超时等参数），
+        不传就自己读——CLI 走这条。
         """
-        cfg = Config.load()
+        cfg = cfg or Config.load()
         cfg.ensure_dirs()
         registry = ToolRegistry(
             [
