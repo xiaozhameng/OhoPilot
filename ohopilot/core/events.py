@@ -13,6 +13,7 @@ EventType = Literal[
     "tool_result",       # 工具执行完毕
     "approval_request",  # 需要人工确认（危险操作）
     "usage",             # token 用量
+    "notice",            # 给界面看的提示信息（不是模型的输出）
     "error",             # 出错
     "done",              # 一轮回答结束
 ]
@@ -55,6 +56,14 @@ def usage(prompt_tokens: int, completion_tokens: int, total: int) -> Event:
 
 def error(message: str) -> Event:
     return Event("error", {"message": message})
+
+def notice(message: str) -> Event:
+    """给界面看的提示（压缩了摘要、切换了会话……），不是模型说的话。
+
+    单独一类而不是塞进 text，是因为 text 会被当成模型输出累积进会话历史，
+    提示信息不该落库、也不该影响下一轮 prompt。
+    """
+    return Event("notice", {"message": message})
 
 def done(session_id: str) -> Event:
     return Event("done", {"session_id": session_id})

@@ -38,7 +38,9 @@
   - [x] 12a. `fs_list_dir` / `fs_search`（含噪声目录剪枝）
   - [x] 12b. `shell_run`（三档判定：放行 / 审批 / 禁止）
 - [x] 13. `ohopilot/skills/loader.py` —— 技能系统
-- [ ] 14. `ohopilot/runtime.py` —— 装配层（出现第二个客户端时才需要它）
+- [x] 14. `ohopilot/runtime.py` —— 装配层（出现第二个客户端时才需要它）
+  - 边界：Runtime 管「一轮问答怎么编排」（压缩摘要 / 跑 agent / 双写存储），入口只管「怎么显示」和「怎么问人」（approver 传进来）
+  - 新增 `notice` 事件：给界面的提示（如「已压缩成摘要」），不落库、不进 prompt
 - [ ] 15. `ohopilot/server/app.py` —— HTTP + SSE 服务端（为桌面端 / 手机端铺路）
 - [ ] 16. 测试与文档
 
