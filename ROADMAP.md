@@ -35,6 +35,8 @@
 - [x] 10. 主循环加厚：多轮工具 / 轮次上限 / 错误回填 / 危险操作审批
 - [x] 11. `ohopilot/memory/store.py` —— 会话记忆 + 长期记忆
 - [ ] 12. 补齐工具：fs 其余能力 → shell（含危险命令禁止清单）→ web
+  - [x] 12a. `fs_list_dir` / `fs_search`（含噪声目录剪枝）
+  - [x] 12b. `shell_run`（三档判定：放行 / 审批 / 禁止）
 - [ ] 13. `ohopilot/skills/loader.py` —— 技能系统
 - [ ] 14. `ohopilot/runtime.py` —— 装配层（出现第二个客户端时才需要它）
 - [ ] 15. `ohopilot/server/app.py` —— HTTP + SSE 服务端（为桌面端 / 手机端铺路）
