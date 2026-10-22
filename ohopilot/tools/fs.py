@@ -1,10 +1,10 @@
 """文件工具：读、写、列目录、搜索。
 
-工作根目录是"安全边界"——写操作分三层防线：
+工作根目录是"安全边界"——写操作分四层防线：
+0. 配置总开关（OHOPILOT_ALLOW_WRITE=0 时一律不落盘）；
 1. 路径越出工作目录 → run() 里直接拒绝；
 2. 命中硬禁止清单（.env / .git）→ run() 里直接拒绝，不给审批机会；
 3. 工作目录内的写操作 → requires_approval=True，走人工审批。
-已实现：读取、写入、列目录、搜索（shell 是下一步）。
 """
 import os
 from pathlib import Path
@@ -120,6 +120,12 @@ class WriteFileTool(_FsTool):
     requires_approval = True
 
     async def run(self, path: str, content: str = "", **_: Any) -> ToolResult:
+        # 防线零：总开关。只想让它读、不许它写的时候，一次都不该落盘
+        if not self.cfg.allow_write:
+            return ToolResult.fail(
+                "写操作已被配置关闭（OHOPILOT_ALLOW_WRITE=0），本次没有写入任何内容。"
+            )
+
         target, inside = self._resolve(path)
 
         # 防线一：硬边界。越出工作目录的写操作直接拒绝

@@ -31,3 +31,12 @@ oho-server = "ohopilot.server.app:main"
 # 告诉 hatchling「要打包的是 ohopilot 这个目录」，免得它自己去猜
 [tool.hatch.build.targets.wheel]
 packages = ["ohopilot"]
+
+# pytest 配置。pythonpath 让测试不用 pip install 也能 import 到源码；
+# asyncio_mode=auto 让所有 async def 测试自动被当成协程测试，不必每个都加 @pytest.mark.asyncio
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error::RuntimeWarning"]

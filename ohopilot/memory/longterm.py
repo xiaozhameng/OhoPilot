@@ -68,11 +68,14 @@ def append_longterm(cfg: Config, text: str) -> int:
     existing = ""
     if path.exists():
         existing = path.read_text(encoding="utf-8")
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
+
+    # 分隔符必须真的写进文件：只把 existing 变量补一个 \n 是不够的，
+    # 文件本身没有尾部换行时，新条目会粘在上一行末尾（"- 老的一条- 新的一条"），
+    # 两条记忆就合成了一条谁也读不懂的东西。
+    separator = "\n" if existing and not existing.endswith("\n") else ""
 
     line = content if content.startswith("- ") else f"- {content}"
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
+        fh.write(separator + line + "\n")
 
-    return len(existing) + len(line) + 1
+    return len(existing) + len(separator) + len(line) + 1

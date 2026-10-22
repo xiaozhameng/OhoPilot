@@ -24,12 +24,20 @@ def _get(name: str, default: str = "") -> str:
     return os.environ.get(f"{ENV_PREFIX}{name}", default).strip()
 
 
+#: 布尔值认得的写法。只有明确列出来的才算，认不出的退回默认值——
+#: 「写错了」和「写成 false」是两回事，不该都静默当成 False。
+_TRUE_WORDS = {"1", "true", "yes", "on", "y"}
+_FALSE_WORDS = {"0", "false", "no", "off", "n"}
+
+
 def _get_bool(name: str, default: bool = False) -> bool:
-    """读取布尔值， 1/true/yes/on 都算真"""
+    """读取布尔值：true/false 各有几种常见写法，认不出就用默认值。"""
     row = _get(name).lower()
-    if not row:
-        return default
-    return row in {"true", "yes", "on", "1"}
+    if row in _TRUE_WORDS:
+        return True
+    if row in _FALSE_WORDS:
+        return False
+    return default
 
 def _get_int(name: str, default: int = 0) -> int:
     """读整数；写错了不崩溃，退回默认值。"""
@@ -90,7 +98,12 @@ class Config:
 
     @classmethod
     def load(cls, workspace: Path | None = None) -> Config:
-        """唯一入口：先读 .env，再从环境变量组装出 Config。"""
+        """唯一入口：先读 .env，再从环境变量组装出 Config。
+
+        工作目录的优先级：显式传参 > OHOPILOT_WORKSPACE > 当前目录。
+        传参优先是为了让测试和未来的「按项目开会话」能指定目录，
+        而不必去改进程环境变量。
+        """
         load_dotenv()
 
         return cls(
@@ -98,7 +111,7 @@ class Config:
             api_base=_get("API_BASE", DEFAULT_API_BASE),
             api_key=_get("API_KEY"),
             home=Path(_get("HOME") or (Path.home() / ".ohopilot")).expanduser(),
-            workspace=Path(workspace or Path.cwd()).expanduser().resolve(),
+            workspace=Path(workspace or _get("WORKSPACE") or Path.cwd()).expanduser().resolve(),
             allow_write=_get_bool("ALLOW_WRITE", True),
             shell_timeout=_get_int("SHELL_TIMEOUT", 60),
             max_tool_rounds=_get_int("MAX_TOOL_ROUNDS", 12),
