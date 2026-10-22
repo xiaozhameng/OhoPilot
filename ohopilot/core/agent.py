@@ -8,6 +8,7 @@ from typing import Callable, Any, Awaitable, AsyncIterator
 from ohopilot.config import Config
 from ohopilot.core.llm import AssistantTurn, LLMError, stream_chat
 from ohopilot.memory.longterm import load_longterm
+from ohopilot.skills.loader import load_skills, render_skill_index
 from ohopilot.tools.base import ToolRegistry
 
 from . import events as ev
@@ -32,12 +33,23 @@ def _system_prompt(cfg: Config, tool_names: list[str]) -> str:
             f"{memory}"
         )
 
+    # 技能：只放「目录」，不放正文。模型判断相关时自己调 skill_load 取全文，
+    # 所以技能再多，每轮也只多几行 token。
+    index = render_skill_index(load_skills(cfg))
+    if index:
+        parts.append(
+            "可用技能（每个技能是一套固定步骤；判断与当前任务相关时，"
+            "先调用 skill_load 取它的正文，再按步骤执行）：\n"
+            f"{index}"
+        )
+
     parts.append(
         "规则：\n"
         "1. 需要操作文件、执行命令时，优先调用工具，不要凭空编造内容。\n"
         "2. 相对路径都相对当前工作目录。\n"
         "3. 用简体中文回答。\n"
-        "4. 发现值得跨会话记住的偏好或约定时，调用 memory_append 记一条，一条一句话。"
+        "4. 发现值得跨会话记住的偏好或约定时，调用 memory_append 记一条，一条一句话。\n"
+        "5. 有技能和任务对得上时，先 skill_load 再动手，不要凭印象编步骤。"
     )
     return "\n".join(parts)
 

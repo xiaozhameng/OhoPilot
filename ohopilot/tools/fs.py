@@ -55,8 +55,10 @@ class _FsTool(Tool):
 class ReadFileTool(_FsTool):
     name = "fs_read_file"
     description = (
-        "读取一个文本文件的内容，参数path 可以是相对路径，或者是绝对路径"
-        "可用offset/limit读取大文件的一部分"
+        "读取一个文本文件，返回带行号的内容。适合：已经知道路径、要读它的内容时。"
+        "不知道文件在哪时先用 fs_search 定位，只想看目录结构用 fs_list_dir，"
+        "两者都比盲猜路径再重试省得多。大文件用 offset/limit 分段读；"
+        "二进制文件（图片、压缩包）读不了。"
     )
 
     parameters = {
@@ -74,9 +76,12 @@ class ReadFileTool(_FsTool):
         if self._is_protected(target):
             return ToolResult.fail(f"禁止读取受保护路径：{target}")
         if not target.exists():
-            return ToolResult.fail(f"文件不存在：{target}")
+            # 错误要给补救路径：只说"不存在"，模型多半会换个猜的路径再试一次
+            return ToolResult.fail(
+                f"文件不存在：{target}\n可用 fs_search 找文件名或内容，或用 fs_list_dir 看目录里实际有什么。"
+            )
         if target.is_dir():
-            return ToolResult.fail(f"这是一个目录，不是文件：{target}")
+            return ToolResult.fail(f"这是一个目录不是文件：{target}\n用 fs_list_dir 查看它里面的内容。")
 
         size = target.stat().st_size
         if size > MAX_READ_BYTES:
@@ -119,7 +124,10 @@ class WriteFileTool(_FsTool):
 
         # 防线一：硬边界。越出工作目录的写操作直接拒绝
         if not inside:
-            return ToolResult.fail(f"路径超出工作目录，已拒绝：{target}")
+            return ToolResult.fail(
+                f"路径超出工作目录，已拒绝：{target}\n"
+                f"写操作只允许在工作目录内进行：{self.cfg.workspace}"
+            )
 
         # 防线二：硬禁止清单（基类共用）。workspace/.env 和 workspace/sub/.env 都会被拦住
         if self._is_protected(target):
@@ -156,11 +164,16 @@ class ListDirTool(_FsTool):
     async def run(self, path: str = ".", limit: int = 200, **_: Any) -> ToolResult:
         target, inside = self._resolve(path)
         if not inside:
-            return ToolResult.fail(f"路径超出工作目录，已拒绝：{target}")
+            return ToolResult.fail(
+                f"路径超出工作目录，已拒绝：{target}\n"
+                f"访问只允许在工作目录内进行：{self.cfg.workspace}"
+            )
         if self._is_protected(target):
             return ToolResult.fail(f"禁止访问受保护路径：{target}")
         if not target.exists():
-            return ToolResult.fail(f"目录不存在：{target}")
+            return ToolResult.fail(
+                f"目录不存在：{target}\n可用 fs_list_dir 的默认参数先看工作目录里有什么。"
+            )
         if not target.is_dir():
             return ToolResult.fail(f"这不是目录，是文件：{target}")
 

@@ -39,6 +39,16 @@ SAFE_PAIRS = {
 #: shell 元字符：出现任意一个，静态判断就不再可靠，一律升级为审批
 _META = re.compile(r"[;&|><`$\n]")
 
+#: 引号里的内容不是 shell 语法，判断元字符之前要先抹掉。
+#: 反例：`git log --pretty=format:"%ad | %s"` 里的 | 只是输出格式里的字符，
+#: 不抹就会把一条纯只读命令误升为审批。
+#: 注意 BLOCK_PATTERNS 仍然拿原文匹配 —— 那一档宁可误杀，代价不对称。
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def _mask_quoted(cmd: str) -> str:
+    return _QUOTED.sub('""', cmd)
+
 #: 硬禁止模式：(正则, 人类可读的理由)
 BLOCK_PATTERNS: list[tuple[str, str]] = [
     (r"\b(sudo|doas)\b", "提权命令"),
@@ -96,7 +106,7 @@ def classify(command: str, workspace: Path | None = None) -> tuple[str, str]:
         if re.search(pattern, cmd, re.IGNORECASE):
             return "block", reason
 
-    if _META.search(cmd):
+    if _META.search(_mask_quoted(cmd)):
         return "ask", "命令包含管道、重定向或串联，无法静态判断影响"
 
     words = cmd.split()
@@ -141,7 +151,9 @@ class ShellTool(Tool):
         "只读命令（ls/cat/grep/git status 等）直接执行；"
         "会修改文件或系统的命令需要用户确认；"
         "提权、删根目录、下载即执行这类命令被禁止。"
-        "命令不要带管道或重定向的场合尽量分开执行，便于逐步确认。"
+        "需要管道、重定向或多条命令串联时，尽量拆成几次调用，便于逐步确认。"
+        "读文件内容优先用 fs_read_file，列目录优先用 fs_list_dir，"
+        "找内容优先用 fs_search——专用工具对结果做过截断与格式化，shell 的原始输出又长又乱。"
     )
 
     parameters = {

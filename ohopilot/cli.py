@@ -22,6 +22,8 @@ from ohopilot.tools.base import ToolRegistry
 from ohopilot.tools.fs import build_fs_tools
 from ohopilot.tools.memory import MemoryAppendTool
 from ohopilot.tools.shell import ShellTool
+from ohopilot.tools.skills import build_skill_tools
+from ohopilot.tools.web import build_web_tools
 
 console = Console()
 
@@ -55,7 +57,15 @@ def build_agent() -> Agent:
     """装配：配置 → 工具注册表 → Agent。"""
     cfg = Config.load()
     cfg.ensure_dirs()
-    registry = ToolRegistry([*build_fs_tools(cfg), MemoryAppendTool(cfg), ShellTool(cfg)])
+    registry = ToolRegistry(
+        [
+            *build_fs_tools(cfg),
+            *build_web_tools(),
+            *build_skill_tools(cfg),
+            MemoryAppendTool(cfg),
+            ShellTool(cfg),
+        ]
+    )
     return Agent(cfg, registry, approver=terminal_approver)
 
 
@@ -181,5 +191,5 @@ def main() -> None:
     store.close()
 
 
-if __name__ == "__&#8203;main__":
+if __name__ == "__main__":
     main()
