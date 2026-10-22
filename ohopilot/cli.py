@@ -17,8 +17,10 @@ from ohopilot.config import Config
 from ohopilot.core.agent import Agent
 from ohopilot.core.llm import has_credentials
 from ohopilot.memory.store import SessionStore
+from ohopilot.memory.summarize import maybe_summarize
 from ohopilot.tools.base import ToolRegistry
 from ohopilot.tools.fs import build_fs_tools
+from ohopilot.tools.memory import MemoryAppendTool
 
 console = Console()
 
@@ -52,7 +54,7 @@ def build_agent() -> Agent:
     """装配：配置 → 工具注册表 → Agent。"""
     cfg = Config.load()
     cfg.ensure_dirs()
-    registry = ToolRegistry(build_fs_tools(cfg))
+    registry = ToolRegistry([*build_fs_tools(cfg), MemoryAppendTool(cfg)])
     return Agent(cfg, registry, approver=terminal_approver)
 
 
@@ -70,6 +72,12 @@ async def ask(
     （比如库里存全文、上下文只带摘要）。
     """
     answer: list[str] = []
+
+    # 未压缩的历史快满了，先压一批早期对话再发请求。
+    # history[:] = ... 是原地替换：main() 那边持有的还是同一个 list 对象
+    if await maybe_summarize(agent.cfg, store, session_id):
+        history[:] = store.load_history(session_id)
+        console.print("[dim]  · 早期对话已压缩成摘要，上下文已瘦身[/dim]")
 
     async for event in agent.run(question, history):
         kind = event.type

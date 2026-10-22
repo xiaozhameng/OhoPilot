@@ -29,6 +29,19 @@ class SessionStore:
             )
             """
         )
+        # 摘要单独一张表，而不是往 messages 里塞一条"假消息"：
+        # 摘要会被反复重写（每次压一批就更新一次），而 messages 是只追加的事实日志。
+        # upto_id 记「已压缩到哪条消息」，回放时从它之后开始。
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS summaries (
+                session_id TEXT PRIMARY KEY,
+                upto_id    INTEGER NOT NULL,
+                content    TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         self._conn.commit()
 
     def create_session(self) -> str:
@@ -53,14 +66,59 @@ class SessionStore:
     def load_history(self, session_id: str, limit: int = 200) -> list[dict[str, str]]:
         """回放成一个对话可用的 messages 列表。
 
-        先按 id 倒序取最近 limit 条、再反转回正序——
+        已被摘要覆盖的部分不再回放原文，改用一条「摘要」消息打头；
+        剩下的按 id 倒序取最近 limit 条、再反转回正序——
         这样上下文永远不会超过 limit 条，聊得再久也不会撑爆 token。
         """
+        upto, summary = self.get_summary(session_id)
         rows = self._conn.execute(
-            "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-            (session_id, limit),
+            "SELECT role, content FROM messages "
+            "WHERE session_id = ? AND id > ? ORDER BY id DESC LIMIT ?",
+            (session_id, upto, limit),
         ).fetchall()
-        return [{"role": role, "content": content} for role, content in reversed(rows)]
+        history = [{"role": role, "content": content} for role, content in reversed(rows)]
+        if summary:
+            history.insert(0, {"role": "user", "content": f"【本次会话早前内容的摘要】\n{summary}"})
+        return history
+
+    # ---- 摘要：给上下文压缩用（summarize.py 调用） ----
+
+    def get_summary(self, session_id: str) -> tuple[int, str]:
+        """返回 (已压缩到哪条消息的 id, 摘要正文)；没有摘要就是 (0, "")。"""
+        row = self._conn.execute(
+            "SELECT upto_id, content FROM summaries WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return (row[0], row[1]) if row else (0, "")
+
+    def save_summary(self, session_id: str, upto_id: int, content: str) -> None:
+        """写入/覆盖本会话的摘要。用 upsert：会话第一次摘要是 INSERT，之后都是 UPDATE。"""
+        self._conn.execute(
+            "INSERT INTO summaries (session_id, upto_id, content, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "upto_id = excluded.upto_id, content = excluded.content, updated_at = excluded.updated_at",
+            (session_id, upto_id, content, datetime.now().isoformat(timespec="seconds")),
+        )
+        self._conn.commit()
+
+    def count_after(self, session_id: str, after_id: int = 0) -> int:
+        """统计某条消息之后还有多少条未压缩的消息。"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND id > ?",
+            (session_id, after_id),
+        ).fetchone()
+        return int(row[0])
+
+    def fetch_after(
+        self, session_id: str, after_id: int = 0, limit: int = 100
+    ) -> list[tuple[int, str, str]]:
+        """取未压缩的最早 limit 条，返回 [(id, role, content)]，按时间正序。"""
+        rows = self._conn.execute(
+            "SELECT id, role, content FROM messages "
+            "WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+            (session_id, after_id, limit),
+        ).fetchall()
+        return [(int(r[0]), r[1], r[2]) for r in rows]
 
     def close(self) -> None:
         self._conn.close()

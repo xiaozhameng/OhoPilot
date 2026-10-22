@@ -158,3 +158,16 @@ async def stream_chat(
             total_tokens=total_tokens,
         ),
     )
+
+
+async def complete(cfg: Config, messages: list[dict[str, Any]]) -> str:
+    """非流式：只把文本收完返回。
+
+    给摘要这类后台任务用——不需要打字机效果，也不需要工具调用。
+    复用 stream_chat 而不是另写一套，是为了少一处「换模型要改两个地方」。
+    """
+    parts: list[str] = []
+    async for kind, payload in stream_chat(cfg, messages, None):
+        if kind == "text":
+            parts.append(payload)
+    return "".join(parts)

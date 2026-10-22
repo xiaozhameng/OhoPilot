@@ -56,6 +56,12 @@ class Config:
     shell_timeout: int = 60
     max_tool_rounds: int = 12
 
+    # 上下文压缩：未压缩的消息超过 summary_after 条时，
+    # 把最老的一批压成摘要，只给最近 summary_keep 条留原文。
+    # 设为 0 表示关闭摘要（退回"只取最近 200 条"的老行为）
+    summary_after: int = 24
+    summary_keep: int = 8
+
     # 服务端
     host: str = "127.0.0.1"
     port: int = 8737
@@ -93,6 +99,8 @@ class Config:
             allow_write=_get_bool("ALLOW_WRITE", True),
             shell_timeout=_get_int("SHELL_TIMEOUT", 60),
             max_tool_rounds=_get_int("MAX_TOOL_ROUNDS", 12),
+            summary_after=_get_int("SUMMARY_AFTER", 24),
+            summary_keep=_get_int("SUMMARY_KEEP", 8),
             host=_get("HOST", "127.0.0.1"),
             port=_get_int("PORT", 8737),
         )
