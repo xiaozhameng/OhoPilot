@@ -414,6 +414,35 @@ async def test_files_上传后agent能读到(server):
     assert "小明" in result.content and "98" in result.content
 
 
+async def test_console_overview_跨会话聚合(server):
+    """控制台总账：跑两个会话（带一次工具调用），看聚合数字对不对。"""
+    server.rt.agent = FakeAgent()
+    await server.client.post("/chat", json={"message": "甲"})
+    await server.client.post("/chat", json={"message": "乙"})
+
+    resp = await server.client.get("/console/overview")
+    body = resp.json()
+
+    assert resp.status_code == 200
+    assert body["usage"]["calls"] == 2  # FakeAgent 每轮一次模型调用
+    assert len(body["by_session"]) == 2
+    assert body["tool_calls_total"] == 0  # FakeAgent 不调工具
+
+
+async def test_console_overview_统计工具调用(server):
+    """工具流水：Runtime 在 tool_result 事件时落库，控制台能看到排行。"""
+    server.rt.store.record_tool_call("s1", "fs_read_file", False)
+    server.rt.store.record_tool_call("s1", "fs_read_file", False)
+    server.rt.store.record_tool_call("s1", "shell_run", True)
+
+    body = (await server.client.get("/console/overview")).json()
+
+    assert body["tool_calls_total"] == 3
+    assert body["tool_errors_total"] == 1
+    top = body["tool_stats"][0]
+    assert top["name"] == "fs_read_file" and top["calls"] == 2
+
+
 async def test_todos_端点恢复清单(server):
     """刷新页面后前端靠这个接口恢复清单——它是「数据还在」的界面侧证据。"""
     server.rt.todos.set_session("sess-todo")

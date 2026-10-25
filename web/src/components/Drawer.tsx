@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchUsage } from "../api";
+import { estimateCost, fmtTokens } from "../cost";
 import type { Block, Health, UsageCall, UsageSummary } from "../types";
 import { IconClose } from "./Icons";
 
@@ -85,28 +86,10 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
   );
 }
 
-/** 价格表：每百万 token 的人民币单价。以模型官网为准，换了模型记得改这里。
- *  hit 是缓存命中部分的输入价，miss 是未命中部分——两者通常差一个数量级。
- *  key 不带 litellm 的 "openai/" 前缀，匹配时统一剥掉。 */
-const PRICE_PER_M: Record<string, { hit: number; miss: number; out: number }> = {
-  "deepseek-chat": { hit: 0.2, miss: 2, out: 3 },
-  "deepseek-reasoner": { hit: 0.2, miss: 2, out: 8 },
-  "deepseek-v4-flash": { hit: 0.2, miss: 2, out: 3 },
-};
+/** 价格表抽到 cost.ts 共用（控制台也要算）——这里只保留本组件用到的调用包装。 */
 
-function estimateCost(call: UsageCall): number | null {
-  const short = call.model.split("/").pop() ?? call.model;
-  const price = PRICE_PER_M[short];
-  if (!price) return null;
-  return (
-    (call.cache_hit_tokens / 1e6) * price.hit +
-    (call.cache_miss_tokens / 1e6) * price.miss +
-    (call.completion_tokens / 1e6) * price.out
-  );
-}
-
-function fmtTokens(n: number): string {
-  return n >= 10000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+function callCost(call: UsageCall): number | null {
+  return estimateCost(call.model, call.cache_hit_tokens, call.cache_miss_tokens, call.completion_tokens);
 }
 
 /**
@@ -202,7 +185,7 @@ function UsagePanel({ sessionId }: { sessionId: string | null }) {
           </thead>
           <tbody>
             {calls.map((call) => {
-              const cost = estimateCost(call);
+              const cost = callCost(call);
               return (
                 <tr key={call.id}>
                   <td>{call.round_no}</td>

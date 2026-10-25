@@ -40,6 +40,9 @@ export function Topbar({
             </span>
           </>
         )}
+        <a className="pill pill--link" href="/console" title="开发者控制台（跨会话总账）">
+          控制台
+        </a>
         <button className="icon-btn" onClick={onOpenUsage} title="Token 用量（开发者面板）">
           <IconChart size={15} />
         </button>

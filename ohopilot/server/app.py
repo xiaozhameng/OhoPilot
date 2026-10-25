@@ -210,6 +210,16 @@ def create_app() -> FastAPI:
             "calls": rt.store.llm_calls(session_id, limit=limit),
         }
 
+    # ---- 开发者控制台（第 26 步）----
+    # 接口按 /console/* 分组：单用户阶段不做鉴权，将来拆独立服务时
+    # 这组前缀整体迁走即可，主界面接口一行不用动（用户拍板的预留边界）。
+
+    @app.get("/console/overview")
+    async def console_overview(request: Request) -> dict[str, Any]:
+        """跨会话聚合：token 总账 / 按模型拆分 / 工具排行 / 每会话成本。"""
+        rt: Runtime = request.app.state.rt
+        return rt.store.console_overview()
+
     @app.post("/chat")
     async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
         rt: Runtime = request.app.state.rt
@@ -269,6 +279,12 @@ def create_app() -> FastAPI:
 
         @app.get("/", include_in_schema=False)
         async def index() -> FileResponse:
+            return FileResponse(STATIC_DIR / "index.html")
+
+        # /console 是同一个 SPA 的第二个入口：前端按 pathname 渲染控制台页。
+        # 返回同一个 index.html，静态资源仍然只从 /assets 拿
+        @app.get("/console", include_in_schema=False)
+        async def console_index() -> FileResponse:
             return FileResponse(STATIC_DIR / "index.html")
 
     else:

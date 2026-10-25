@@ -42,6 +42,22 @@ export interface RawEvent {
   session_id?: string;
 }
 
+/** 开发者控制台（第 26 步）：GET /console/overview 的返回结构 */
+export interface ConsoleOverview {
+  usage: UsageSummary;
+  by_model: Array<{
+    model: string;
+    calls: number;
+    total_tokens: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+  }>;
+  tool_stats: Array<{ name: string; calls: number; errors: number }>;
+  tool_calls_total: number;
+  tool_errors_total: number;
+  by_session: Array<{ session_id: string; llm_calls: number; total_tokens: number }>;
+}
+
 /** 任务清单的一条。与后端 memory/todo.py 的 list_items() 返回一致。 */
 export interface TodoItem {
   id: number;

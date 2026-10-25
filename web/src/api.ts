@@ -8,6 +8,7 @@
  */
 
 import type {
+  ConsoleOverview,
   Health,
   HistoryMessage,
   RawEvent,
@@ -101,6 +102,12 @@ export async function fetchUsage(
   const resp = await fetch(`${BASE}/usage${query}`);
   if (!resp.ok) throw new Error(await readError(resp));
   return (await resp.json()) as { summary: UsageSummary; calls: UsageCall[] };
+}
+
+export async function fetchConsoleOverview(): Promise<ConsoleOverview> {
+  const resp = await fetch(`${BASE}/console/overview`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as ConsoleOverview;
 }
 
 export interface AskOptions {

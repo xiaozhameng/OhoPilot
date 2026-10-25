@@ -147,11 +147,18 @@ class Runtime:
         async for event in self.agent.run(question, history):
             if event.type == "text":
                 answer.append(event.data["delta"])
-            elif event.type == "tool_result" and event.data.get("name", "").startswith("todo_"):
-                # 清单工具刚改完库，追加一条全量快照事件给界面。
-                # 拦截在这里而不是让工具自己发事件：工具只管干活，
-                # 「怎么通知界面」是 Runtime（编排层）的事——和 usage 落库同一个套路。
-                yield ev.todo(self.todos.list_items())
+            elif event.type == "tool_result":
+                # 每次工具执行都记一笔流水（第 26 步控制台的「工具调用排行」数据源）
+                self.store.record_tool_call(
+                    session_id,
+                    event.data.get("name", ""),
+                    bool(event.data.get("is_error", False)),
+                )
+                if event.data.get("name", "").startswith("todo_"):
+                    # 清单工具刚改完库，追加一条全量快照事件给界面。
+                    # 拦截在这里而不是让工具自己发事件：工具只管干活，
+                    # 「怎么通知界面」是 Runtime（编排层）的事——和 usage 落库同一个套路。
+                    yield ev.todo(self.todos.list_items())
             elif event.type == "usage":
                 # agent 不知道会话号，落库只能在这里做。存一份"每次模型调用"
                 # 的流水，开发者面板的图表全靠它；agent 主循环保持零存储依赖。

@@ -70,6 +70,22 @@ class SessionStore:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls (session_id)"
         )
+        # 工具调用流水（第 26 步控制台用）。只记事实：谁、成功没——
+        # 参数和结果不落库（messages 里已有对话上下文，这里只做统计）
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tool_calls (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                is_error    INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls (session_id)"
+        )
         self._conn.commit()
 
     def create_session(self) -> str:
@@ -241,6 +257,68 @@ class SessionStore:
             "cache_hit_rate": round(int(hit) / cacheable, 4) if cacheable else 0.0,
             "avg_first_token_ms": round(float(avg_first)),
             "total_duration_ms": int(duration),
+        }
+
+    # ---- 控制台聚合（第 26 步）：只读统计，不碰业务表 ----
+
+    def record_tool_call(self, session_id: str, name: str, is_error: bool) -> None:
+        """记一次工具调用。runtime 在 tool_result 事件时调用，agent 保持零存储依赖。"""
+        self._conn.execute(
+            "INSERT INTO tool_calls (session_id, created_at, name, is_error) VALUES (?, ?, ?, ?)",
+            (
+                session_id,
+                datetime.now().isoformat(timespec="seconds"),
+                name,
+                int(is_error),
+            ),
+        )
+        self._conn.commit()
+
+    def console_overview(self) -> dict[str, Any]:
+        """跨会话聚合的开发者总账。全部一条 SQL 出一列，不循环查。"""
+        by_model = [
+            {"model": r[0], "calls": r[1], "total_tokens": r[2], "prompt_tokens": r[3], "completion_tokens": r[4]}
+            for r in self._conn.execute(
+                """
+                SELECT model, COUNT(*),
+                       COALESCE(SUM(total_tokens), 0),
+                       COALESCE(SUM(prompt_tokens), 0),
+                       COALESCE(SUM(completion_tokens), 0)
+                FROM llm_calls GROUP BY model ORDER BY SUM(total_tokens) DESC
+                """
+            ).fetchall()
+        ]
+
+        tool_stats = [
+            {"name": r[0], "calls": r[1], "errors": r[2]}
+            for r in self._conn.execute(
+                """
+                SELECT name, COUNT(*), COALESCE(SUM(is_error), 0)
+                FROM tool_calls GROUP BY name ORDER BY COUNT(*) DESC LIMIT 20
+                """
+            ).fetchall()
+        ]
+        tool_row = self._conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(is_error), 0) FROM tool_calls"
+        ).fetchone()
+
+        by_session = [
+            {"session_id": r[0], "llm_calls": r[1], "total_tokens": r[2]}
+            for r in self._conn.execute(
+                """
+                SELECT session_id, COUNT(*), COALESCE(SUM(total_tokens), 0)
+                FROM llm_calls GROUP BY session_id ORDER BY SUM(total_tokens) DESC LIMIT 20
+                """
+            ).fetchall()
+        ]
+
+        return {
+            "usage": self.usage_summary(None),
+            "by_model": by_model,
+            "tool_stats": tool_stats,
+            "tool_calls_total": int(tool_row[0]),
+            "tool_errors_total": int(tool_row[1]),
+            "by_session": by_session,
         }
 
     def recent_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
