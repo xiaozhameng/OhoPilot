@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OhoPilot",
+  "version": "0.1.0",
+  "identifier": "cn.ohopilot.desktop",
+  "build": {},
+  "app": {
+    "windows": [
+      {
+        "title": "OhoPilot · 哦豁",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600,
+        "url": "http://127.0.0.1:8737"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": []
+  }
+}

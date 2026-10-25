@@ -88,10 +88,12 @@ OhoPilot = 桌面优先的**办公助手**：
   - 前端第二个页面挂 `/console`（同一 SPA 按 pathname 分流），主界面顶栏「控制台」跳转
   - 新增 `tool_calls` 流水表（Runtime 在 tool_result 时落库，agent 保持零存储依赖）
   - 单用户阶段不拆服务、不做鉴权；多用户时按 /console/* 前缀整体迁走
-- [ ] **27. Tauri 桌面壳**（复用 web/ 前端，打包成 .app）
-- [ ] **28. 打包分发 + install.sh**
-  - install.sh：检查 Python/Node → 装依赖（按需选 `[server]`/`[rag]` 等组）→ 生成 .env → 自检
-  - README「依赖矩阵」表：每个功能依赖什么、不装会怎样、怎么补装
+- [x] **27. Tauri 桌面壳**（复用 web/ 前端，打包成 .app）✅ 脚手架 2026-10-25
+  - `src-tauri/`：Tauri 2 配置 + 壳进程（原生窗口加载本机服务 URL，同源零 CORS）
+  - 界面零改动（复用 web/ 产物）；打包需 Rust 工具链，步骤见 `src-tauri/README.md`
+- [x] **28. 打包分发 + install.sh** ✅ 2026-10-25
+  - install.sh：找 Python（3.12+）→ 建 venv → 装依赖（`--core` 可选；失败自动换清华镜像）→ 生成 .env → 检查前端产物 → 装配自检（`--with-tests` 加跑 pytest），幂等可重复执行
+  - README「依赖矩阵」表 + 快速开始改为 install.sh 优先
 
 ## 里程碑记录（借鉴 commit 区间口径）
 
@@ -106,7 +108,7 @@ OhoPilot = 桌面优先的**办公助手**：
 | M2 · 服务化与产品化（v0.1） | `3ea5f41` | `b931afd` | 目的：从「能跑」到「像产品」。步 14–17：Runtime 装配层、HTTP+SSE 服务端、网页工作台、207 测试、README、start.sh。合为一个区间：服务端→界面→测试→文档是一条交付链 |
 | M3 · 可观测（v0.2） | `b931afd` | `3836e08` | 第 18 步：每轮用量/缓存命中/耗时落库 + 开发者面板，218 用例。目的是「优化之前先有仪表盘」。单 commit 区间：仪表盘是一条完整交付链 |
 | M4 · 办公助手雏形（v0.3） | `ae13c53` | `8d598f5` | 步 19–22：web_search / 任务清单 / 文档解析+上传 / RAG（含 uploads 搬家、家目录写边界两个拍板）。每个工具一个 commit，最后 8d598f5 收口 RAG |
-| M5 · 可扩展与交付（v0.4） | `8d598f5` 之后 | — | 步 23–28：MCP / 技能中心 / 模型路由 / 控制台 / Tauri / install.sh |
+| M5 · 可扩展与交付（v0.4） | `44a1bca` | 本轮收口 commit | 步 23–28：MCP / 技能中心 / 模型路由 / 控制台 / Tauri 脚手架 / install.sh。ROADMAP v2 的 28 步到此全部完成 |
 
 ## 已定技术决策（2026-10-25 用户拍板）
 

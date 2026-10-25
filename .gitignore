@@ -29,3 +29,7 @@ web/node_modules/
 web/dist/
 web/.vite/
 *.tsbuildinfo
+
+# Tauri 构建产物
+src-tauri/target/
+src-tauri/gen/
