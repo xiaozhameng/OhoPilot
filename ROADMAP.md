@@ -72,9 +72,10 @@ OhoPilot = 桌面优先的**办公助手**：
   - 核心改动：`ToolRegistry` 从「启动固定 8 个」改为「内置 + 动态注册」两层
   - MCP 工具 schema ↔ 本项目 `Tool` 模具的转换层；工具调用跨进程转发
   - 配置：`~/.ohopilot/mcp.json`（对标业界惯例）；范围先 stdio，HTTP 后补
-- [ ] **24. 技能中心**（安装别人的 skill）
-  - 社区 SKILL.md（Claude 系）格式兼容：frontmatter 字段转换层
-  - `skill_install`（从 URL/目录装进 `~/.ohopilot/skills/`）+ 安装前安全审计
+- [x] **24. 技能中心**（安装别人的 skill）✅ 2026-10-25
+  - `skill_install` 工具：本地目录（Claude 形态）/ URL 两种来源
+  - 格式兼容层：Claude 系 frontmatter 转换（名字归一化、多余字段丢弃、description 兜底）
+  - 安装前安全审计：danger（sudo/rm -rf/下载即执行等）无条件拒装；warning（联网/装包等）需 confirm_risky 确认
 - [ ] **25. 模型路由**（省钱：简单步骤走小模型）
   - 路由规则：摘要/压缩等后台任务 → 便宜模型；复杂推理 → 主模型
   - 用第 18 步面板量化路由前后的成本对比（学以致用）
