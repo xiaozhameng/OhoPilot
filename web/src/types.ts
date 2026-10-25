@@ -11,6 +11,7 @@ export type EventType =
   | "tool_result"
   | "approval_request"
   | "usage"
+  | "todo"
   | "notice"
   | "error"
   | "done";
@@ -35,8 +36,18 @@ export interface RawEvent {
   duration_ms?: number;
   first_token_ms?: number;
   context?: Record<string, number>;
+  /** todo 事件携带的全量清单快照 */
+  items?: TodoItem[];
   message?: string;
   session_id?: string;
+}
+
+/** 任务清单的一条。与后端 memory/todo.py 的 list_items() 返回一致。 */
+export interface TodoItem {
+  id: number;
+  position: number;
+  content: string;
+  status: "pending" | "in_progress" | "done";
 }
 
 /** 助手消息里的一个块。消息必须建模成「有序块列表」，不能是一条字符串：

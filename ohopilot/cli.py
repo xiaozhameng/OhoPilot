@@ -95,6 +95,16 @@ async def ask(
         elif kind == "usage":
             console.print(f"\n[dim]（本轮 {event.data['total_tokens']} tokens）[/dim]")
 
+        elif kind == "todo":
+            console.print()
+            console.print("  任务清单：", style="bold", markup=False)
+            _ICON = {"pending": "☐", "in_progress": "▸", "done": "☑"}
+            for item in event.data["items"]:
+                console.print(
+                    f"  {_ICON[item['status']]} {item['content']}", markup=False
+                )
+            console.print()
+
         # done / approval_request 不需要在这里渲染：
         # 前者是给客户端判断「这轮结束了」的信号，后者的交互在 terminal_approver 里
 

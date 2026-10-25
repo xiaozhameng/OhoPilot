@@ -13,6 +13,7 @@ EventType = Literal[
     "tool_result",       # 工具执行完毕
     "approval_request",  # 需要人工确认（危险操作）
     "usage",             # token 用量
+    "todo",              # 任务清单快照（全量）
     "notice",            # 给界面看的提示信息（不是模型的输出）
     "error",             # 出错
     "done",              # 一轮回答结束
@@ -76,6 +77,14 @@ def usage(
     if context is not None:
         data["context"] = context
     return Event("usage", data)
+
+def todo(items: list[dict[str, Any]]) -> Event:
+    """任务清单快照，全量推送。
+
+    带全量而不是增量（"3 号变 done 了"），是为了让界面端只剩一个动作：
+    拿到就整面替换，不用处理丢包/乱序。清单最多十几条，全量不贵。
+    """
+    return Event("todo", {"items": items})
 
 def error(message: str) -> Event:
     return Event("error", {"message": message})

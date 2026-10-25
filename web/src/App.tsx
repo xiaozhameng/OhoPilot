@@ -4,6 +4,7 @@ import {
   ask,
   fetchHealth,
   fetchSessionMessages,
+  fetchSessionTodos,
   fetchSessions,
   saveSettings,
 } from "./api";
@@ -12,6 +13,7 @@ import { Composer } from "./components/Composer";
 import { Drawer, type DrawerMode } from "./components/Drawer";
 import { MessageList } from "./components/MessageList";
 import { Sidebar } from "./components/Sidebar";
+import { TodoPanel } from "./components/TodoPanel";
 import { Topbar } from "./components/Topbar";
 import { historyToMessages, initialState, newId, reducer } from "./state";
 import type { Block, Health } from "./types";
@@ -37,6 +39,15 @@ export default function App() {
     }
   }, []);
 
+  // 清单是锦上添花的信息：拉不到就静默不显示，别为它报错打扰对话
+  const restoreTodos = useCallback(async (sessionId: string) => {
+    try {
+      dispatch({ type: "todos", items: await fetchSessionTodos(sessionId) });
+    } catch {
+      /* 面板缺席不影响对话 */
+    }
+  }, []);
+
   useEffect(() => {
     fetchHealth()
       .then(setHealth)
@@ -53,12 +64,13 @@ export default function App() {
           dispatch({ type: "open", sessionId: deepLink, messages: historyToMessages(rows) }),
         )
         .catch(() => undefined);
+      void restoreTodos(deepLink);
     }
     // ?usage=1 直接打开用量面板：面板也可以被分享/收藏
     if (params.get("usage")) setDrawer("usage");
 
     void refreshSessions();
-  }, [refreshSessions]);
+  }, [refreshSessions, restoreTodos]);
 
   function rememberInUrl(sessionId: string | null) {
     const url = sessionId ? `?session=${encodeURIComponent(sessionId)}` : window.location.pathname;
@@ -72,6 +84,7 @@ export default function App() {
       dispatch({ type: "open", sessionId, messages: historyToMessages(rows) });
       rememberInUrl(sessionId);
       setSidebarOpen(false);
+      void restoreTodos(sessionId);
     } catch (err) {
       dispatch({ type: "error", message: `读取会话失败：${String(err)}` });
     }
@@ -164,6 +177,7 @@ export default function App() {
         />
 
         <main className="content">
+          <TodoPanel items={state.todos} />
           <MessageList
             messages={state.messages}
             onOpenTool={(block) => {

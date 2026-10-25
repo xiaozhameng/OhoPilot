@@ -85,6 +85,7 @@ async def test_health_报告配置与工具清单(server):
     assert set(body["tools"]) == {
         "fs_read_file", "fs_write_file", "fs_list_dir", "fs_search",
         "web_fetch", "web_search", "skill_load", "memory_append", "shell_run",
+        "todo_write", "todo_update",
     }
     assert body["pending_approvals"] == 0
 
@@ -356,6 +357,21 @@ async def test_usage_端点返回总账与会话流水(server):
     assert body["calls"][0]["session_id"] == session_id
     # 模型名由 runtime 补上——agent 不管这件事
     assert body["calls"][0]["model"] == server.rt.cfg.model
+
+
+async def test_todos_端点恢复清单(server):
+    """刷新页面后前端靠这个接口恢复清单——它是「数据还在」的界面侧证据。"""
+    server.rt.todos.set_session("sess-todo")
+    server.rt.todos.replace_all(["第一步", "第二步"])
+    server.rt.todos.update(1, status="done")
+
+    resp = await server.client.get("/sessions/sess-todo/todos")
+    body = resp.json()
+
+    assert resp.status_code == 200
+    assert len(body["items"]) == 2
+    assert body["items"][0]["status"] == "done"
+    assert body["items"][1]["content"] == "第二步"
 
 
 async def test_usage_可按会话过滤(server):

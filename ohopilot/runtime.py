@@ -20,12 +20,14 @@ from ohopilot.core import events as ev
 from ohopilot.core.agent import Agent, Approver
 from ohopilot.memory.store import SessionStore
 from ohopilot.memory.summarize import maybe_summarize
+from ohopilot.memory.todo import TodoStore
 from ohopilot.tools.base import ToolRegistry
 from ohopilot.tools.fs import build_fs_tools
 from ohopilot.tools.memory import MemoryAppendTool
 from ohopilot.tools.search import build_search_tools
 from ohopilot.tools.shell import ShellTool
 from ohopilot.tools.skills import build_skill_tools
+from ohopilot.tools.todo import build_todo_tools
 from ohopilot.tools.web import build_web_tools
 
 
@@ -37,6 +39,7 @@ class Runtime:
     registry: ToolRegistry
     agent: Agent
     store: SessionStore
+    todos: TodoStore
 
     # ---------- 装配 ----------
 
@@ -56,19 +59,21 @@ class Runtime:
         """
         cfg = cfg or Config.load()
         cfg.ensure_dirs()
+        todos = TodoStore(cfg.db_path)
         registry = ToolRegistry(
             [
                 *build_fs_tools(cfg),
                 *build_web_tools(),
                 *build_search_tools(cfg),
                 *build_skill_tools(cfg),
+                *build_todo_tools(todos),
                 MemoryAppendTool(cfg),
                 ShellTool(cfg),
             ]
         )
         agent = Agent(cfg, registry, approver=approver)
         store = SessionStore(cfg.db_path)
-        return cls(cfg=cfg, registry=registry, agent=agent, store=store)
+        return cls(cfg=cfg, registry=registry, agent=agent, store=store, todos=todos)
 
     # ---------- 会话 ----------
 
@@ -83,6 +88,7 @@ class Runtime:
 
     def close(self) -> None:
         self.store.close()
+        self.todos.close()
 
     # ---------- 一轮问答 ----------
 
@@ -103,11 +109,19 @@ class Runtime:
             history[:] = self.store.load_history(session_id)
             yield ev.notice("早期对话已压缩成摘要，上下文已瘦身")
 
+        # 清单按会话隔离，而工具是全局单例——每轮开始先把会话号绑给 store。
+        self.todos.set_session(session_id)
+
         answer: list[str] = []
 
         async for event in self.agent.run(question, history):
             if event.type == "text":
                 answer.append(event.data["delta"])
+            elif event.type == "tool_result" and event.data.get("name", "").startswith("todo_"):
+                # 清单工具刚改完库，追加一条全量快照事件给界面。
+                # 拦截在这里而不是让工具自己发事件：工具只管干活，
+                # 「怎么通知界面」是 Runtime（编排层）的事——和 usage 落库同一个套路。
+                yield ev.todo(self.todos.list_items())
             elif event.type == "usage":
                 # agent 不知道会话号，落库只能在这里做。存一份"每次模型调用"
                 # 的流水，开发者面板的图表全靠它；agent 主循环保持零存储依赖。

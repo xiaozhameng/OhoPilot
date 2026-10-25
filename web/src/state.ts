@@ -6,7 +6,7 @@
  * 收敛成一个纯函数 applyEvent(message, event) 之后，任何一个事件的处理都能单独推理。
  */
 
-import type { Block, ChatMessage, PendingApproval, RawEvent, SessionSummary } from "./types";
+import type { Block, ChatMessage, PendingApproval, RawEvent, SessionSummary, TodoItem } from "./types";
 
 export interface ChatState {
   sessions: SessionSummary[];
@@ -14,6 +14,7 @@ export interface ChatState {
   messages: ChatMessage[];
   streaming: boolean;
   pending: PendingApproval[];
+  todos: TodoItem[];
   lastTurnTokens: number;
   totalTokens: number;
   error: string | null;
@@ -25,6 +26,7 @@ export const initialState: ChatState = {
   messages: [],
   streaming: false,
   pending: [],
+  todos: [],
   lastTurnTokens: 0,
   totalTokens: 0,
   error: null,
@@ -36,6 +38,8 @@ export type Action =
   | { type: "new-session" }
   | { type: "send"; text: string; assistantId: string }
   | { type: "event"; event: RawEvent; assistantId: string }
+  /** 打开会话后从 GET /sessions/{id}/todos 恢复的清单 */
+  | { type: "todos"; items: TodoItem[] }
   | { type: "session-id"; sessionId: string }
   | { type: "stream-end" }
   | { type: "approval"; callId: string }
@@ -141,6 +145,7 @@ export function reducer(state: ChatState, action: Action): ChatState {
         sessionId: action.sessionId,
         messages: action.messages,
         pending: [],
+        todos: [],
         lastTurnTokens: 0,
         totalTokens: 0,
         error: null,
@@ -152,6 +157,7 @@ export function reducer(state: ChatState, action: Action): ChatState {
         sessionId: null,
         messages: [],
         pending: [],
+        todos: [],
         lastTurnTokens: 0,
         totalTokens: 0,
         error: null,
@@ -199,6 +205,11 @@ export function reducer(state: ChatState, action: Action): ChatState {
         };
       }
 
+      // 清单和 usage 一样是会话级状态，不进消息流；快照整面替换
+      if (event.type === "todo") {
+        return { ...state, todos: event.items ?? [] };
+      }
+
       return {
         ...state,
         messages: state.messages.map((m) =>
@@ -209,6 +220,9 @@ export function reducer(state: ChatState, action: Action): ChatState {
 
     case "session-id":
       return { ...state, sessionId: action.sessionId };
+
+    case "todos":
+      return { ...state, todos: action.items };
 
     case "stream-end":
       return {

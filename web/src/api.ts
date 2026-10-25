@@ -12,6 +12,7 @@ import type {
   HistoryMessage,
   RawEvent,
   SessionSummary,
+  TodoItem,
   UsageCall,
   UsageSummary,
 } from "./types";
@@ -49,6 +50,15 @@ export async function fetchSessionMessages(sessionId: string): Promise<HistoryMe
   if (!resp.ok) throw new Error(await readError(resp));
   const body = (await resp.json()) as { messages: HistoryMessage[] };
   return body.messages;
+}
+
+/** 恢复某会话的任务清单。404（会话不存在/没有清单）按空清单处理。 */
+export async function fetchSessionTodos(sessionId: string): Promise<TodoItem[]> {
+  const resp = await fetch(`${BASE}/sessions/${encodeURIComponent(sessionId)}/todos`);
+  if (resp.status === 404) return [];
+  if (!resp.ok) throw new Error(await readError(resp));
+  const body = (await resp.json()) as { items: TodoItem[] };
+  return body.items;
 }
 
 export async function answerApproval(callId: string, allow: boolean): Promise<void> {

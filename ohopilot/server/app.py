@@ -141,6 +141,20 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=f"会话不存在或为空：{session_id}")
         return {"session_id": session_id, "messages": history}
 
+    @app.get("/sessions/{session_id}/todos")
+    async def session_todos(session_id: str, request: Request) -> dict[str, Any]:
+        """某会话的任务清单快照。
+
+        存在的理由：todo 表按会话持久化了，但前端刷新后只拉得到消息历史，
+        没有这个接口清单就「丢了」（数据还在，界面不显示）。
+        TodoStore 是全局单例、按 set_session 隔离——HTTP 并发下先设再读
+        理论上可能被别的请求插进来改会话号，但清单操作都是同一事件循环里
+        的同步短操作（无 await 夹在中间），实际不会交错。
+        """
+        rt: Runtime = request.app.state.rt
+        rt.todos.set_session(session_id)
+        return {"session_id": session_id, "items": rt.todos.list_items()}
+
     @app.get("/usage")
     async def usage(
         request: Request,
