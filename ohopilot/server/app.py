@@ -53,9 +53,11 @@ async def lifespan(app: FastAPI):
     app.state.rt = Runtime.create(approver=broker.approver, cfg=cfg)
     #: session_id → Lock。惰性创建，不用预分配
     app.state.locks = {}
+    await app.state.rt.setup_mcp()
     try:
         yield
     finally:
+        await app.state.rt.shutdown_mcp()
         app.state.rt.close()
 
 

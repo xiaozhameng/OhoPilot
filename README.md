@@ -35,6 +35,23 @@ cp .env.example .env
 
 > 小提示：`.env` 里加 `LITELLM_LOCAL_MODEL_COST_MAP=True` 可以跳过 litellm 启动时联网拉模型价格表（国内网络会白等约 3 秒）。
 
+## MCP 外部工具
+
+把现成的 MCP 服务器（社区数千个：GitHub、数据库、浏览器……）接进 OhoPilot。创建 `~/.ohopilot/mcp.json`（与 Claude Desktop 同格式，可直接抄现成配置）：
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    }
+  }
+}
+```
+
+重启后外部工具自动注册，名字为 `mcp__<服务器>__<工具>`（防重名）。外部工具是第三方代码，**调用前需要你确认**；某个服务器坏了只警告跳过，不影响本地功能。第一版只支持 stdio 传输。
+
 打开 `.env` 填上 `OHOPILOT_API_KEY`，然后一条命令起网页版：
 
 ```bash

@@ -109,15 +109,27 @@ async def ask(
         # 前者是给客户端判断「这轮结束了」的信号，后者的交互在 terminal_approver 里
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="oho",
-        description="OhoPilot —— 跑在你电脑上的中文办公 agent",
-    )
-    parser.add_argument("question", nargs="*", help="要问的问题；不提供则进入交互模式")
-    args = parser.parse_args()
+async def _input_async(prompt: str) -> str:
+    """input 放进线程池跑：不阻塞事件循环（MCP 子进程还挂在循环上）。"""
+    return await asyncio.to_thread(input, prompt)
 
+
+async def amain(args: argparse.Namespace) -> None:
+    """整个 CLI 生命周期跑在唯一一个事件循环里。
+
+    为什么不能像以前那样每轮 asyncio.run()：MCP 子进程绑定在创建它的
+    循环上，跨循环调用会炸。服务端从一开始就是长驻循环，这里是还债。
+    """
     rt = Runtime.create(approver=terminal_approver)
+    try:
+        await rt.setup_mcp()
+        await _run_mode(rt, args)
+    finally:
+        await rt.shutdown_mcp()
+        rt.close()
+
+
+async def _run_mode(rt: Runtime, args: argparse.Namespace) -> None:
     cfg = rt.cfg
 
     if not has_credentials(cfg):
@@ -130,10 +142,9 @@ def main() -> None:
     # 每次一次性提问都开新会话：问完即走，不复用上下文
     if question:
         session_id = rt.new_session()
-        asyncio.run(ask(rt, session_id, question, []))
+        await ask(rt, session_id, question, [])
         console.print(f"\n[dim]（会话 {session_id} 已存档）[/dim]")
         console.print()
-        rt.close()
         return
 
     # 模式二：不带参数 → 交互模式
@@ -143,13 +154,15 @@ def main() -> None:
 
     console.print(f"[bold]OhoPilot[/bold]  模型：{cfg.model}")
     console.print(f"工作目录：{cfg.workspace}")
+    mcp_note = f"，MCP：{len(rt.mcp_clients)} 个服务器" if rt.mcp_clients else ""
+    console.print(f"[dim]已就绪{mcp_note}[/dim]")
     if history:
         console.print(f"[dim]已接续会话 {session_id}（{len(history)} 条历史消息），/new 开新会话[/dim]")
     console.print("直接输入问题开始。内置命令：/exit 退出，/new 开新会话\n")
 
     while True:
         try:
-            line = input("你 › ").strip()
+            line = (await _input_async("你 › ")).strip()
         except (EOFError, KeyboardInterrupt):
             console.print()
             break
@@ -164,10 +177,18 @@ def main() -> None:
             console.print(f"[dim]已开新会话 {session_id}（旧会话仍留在库里，随时可查）[/dim]\n")
             continue
 
-        asyncio.run(ask(rt, session_id, line, history))
+        await ask(rt, session_id, line, history)
         console.print()
 
-    rt.close()
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="oho",
+        description="OhoPilot —— 跑在你电脑上的中文办公 agent",
+    )
+    parser.add_argument("question", nargs="*", help="要问的问题；不提供则进入交互模式")
+    args = parser.parse_args()
+    asyncio.run(amain(args))
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from ohopilot.config import Config
@@ -42,6 +42,8 @@ class Runtime:
     agent: Agent
     store: SessionStore
     todos: TodoStore
+    #: MCP 外部服务器连接表（名字 → client）。setup_mcp() 之后才有内容
+    mcp_clients: dict = field(default_factory=dict)
 
     # ---------- 装配 ----------
 
@@ -93,6 +95,30 @@ class Runtime:
     def close(self) -> None:
         self.store.close()
         self.todos.close()
+
+    # ---------- MCP 外部工具 ----------
+
+    async def setup_mcp(self) -> None:
+        """连接 ~/.ohopilot/mcp.json 里配置的外部服务器，把工具注册进 registry。
+
+        必须在事件循环里调用（服务端 lifespan / CLI 的 async main）——
+        MCP 子进程绑定在创建它的循环上，之后所有调用都得在同一个循环里。
+        没有配置文件 = 什么都不发生，零成本。
+        """
+        from ohopilot.mcp.bridge import connect_all
+        from ohopilot.mcp.client import load_mcp_config
+
+        specs = load_mcp_config(self.cfg.home / "mcp.json")
+        if not specs:
+            return
+        self.mcp_clients, tools = await connect_all(specs)
+        for tool in tools:
+            self.registry.register(tool)
+
+    async def shutdown_mcp(self) -> None:
+        for client in self.mcp_clients.values():
+            await client.stop()
+        self.mcp_clients.clear()
 
     # ---------- 一轮问答 ----------
 
