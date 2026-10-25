@@ -5,7 +5,7 @@
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator
 
 
@@ -205,12 +205,19 @@ async def stream_chat(
     )
 
 
-async def complete(cfg: Config, messages: list[dict[str, Any]]) -> str:
+async def complete(cfg: Config, messages: list[dict[str, Any]], *, fast: bool = False) -> str:
     """非流式：只把文本收完返回。
 
     给摘要这类后台任务用——不需要打字机效果，也不需要工具调用。
     复用 stream_chat 而不是另写一套，是为了少一处「换模型要改两个地方」。
+
+    fast=True 且配置了 fast_model 时走便宜模型：这是模型路由（第 25 步）。
+    摘要这种「压缩旧对话」的活不需要主模型的推理能力，小模型干同样好、
+    成本低一个量级。没配 fast_model 则原样走主模型，行为不变。
     """
+    if fast and cfg.fast_model:
+        cfg = replace(cfg, model=cfg.fast_model)
+
     parts: list[str] = []
     async for kind, payload in stream_chat(cfg, messages, None):
         if kind == "text":

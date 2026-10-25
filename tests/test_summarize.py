@@ -20,7 +20,7 @@ class FakeLLM:
         self.raises = raises
         self.prompts: list[str] = []
 
-    async def __call__(self, cfg, messages):
+    async def __call__(self, cfg, messages, **kwargs):  # kwargs：第 25 步起摘要会带 fast=True
         self.prompts.append(messages[-1]["content"])
         if self.raises:
             raise self.raises

@@ -55,6 +55,10 @@ class Config:
     api_base: str = DEFAULT_API_BASE
     api_key: str = ""
 
+    # 模型路由：后台任务（滚动摘要等）走便宜的小模型，主对话仍用 model。
+    # 不配 = 不路由，所有调用都走主模型（行为与之前完全一致）
+    fast_model: str = ""
+
     # 位置
     home: Path = field(default_factory=lambda: Path.home() / ".ohopilot")
     workspace: Path = field(default_factory=Path.cwd)
@@ -126,6 +130,7 @@ class Config:
             model=_get("MODEL", DEFAULT_MODEL),
             api_base=_get("API_BASE", DEFAULT_API_BASE),
             api_key=_get("API_KEY"),
+            fast_model=_get("FAST_MODEL"),
             home=Path(_get("HOME") or (Path.home() / ".ohopilot")).expanduser(),
             workspace=Path(workspace or _get("WORKSPACE") or Path.cwd()).expanduser().resolve(),
             allow_write=_get_bool("ALLOW_WRITE", True),

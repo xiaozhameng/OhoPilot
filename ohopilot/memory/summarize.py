@@ -65,6 +65,7 @@ async def maybe_summarize(cfg: Config, store: SessionStore, session_id: str) -> 
                 {"role": "system", "content": SUMMARY_PROMPT},
                 {"role": "user", "content": "\n\n".join(blocks)},
             ],
+            fast=True,  # 摘要是后台杂活，路由到便宜模型（第 25 步）；没配 fast_model 时自动回落主模型
         )
     except LLMError:
         # 压缩失败就当没发生：这次不压，下次再试，对话照常进行
