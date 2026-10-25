@@ -52,13 +52,26 @@ class _FsTool(Tool):
             inside = False
         return path, inside
 
+    def _is_under(self, path: Path, root: Path) -> bool:
+        """path 是否在 root 目录内。"""
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
+    #: 数据家目录里禁止 fs_write_file 裸写的文件。它们各有专用通道，
+    #: 裸写会绕过格式与并发保护（MEMORY.md 该走 memory_append，
+    #: 数据库该走 store 层的连接，agent 拿文本工具写二进制库文件必坏）。
+    HOME_WRITE_PROTECTED = {"ohopilot.db", "ohopilot.db-journal", "MEMORY.md"}
+
 class ReadFileTool(_FsTool):
     name = "fs_read_file"
     description = (
         "读取一个文本文件，返回带行号的内容。适合：已经知道路径、要读它的内容时。"
         "不知道文件在哪时先用 fs_search 定位，只想看目录结构用 fs_list_dir，"
         "两者都比盲猜路径再重试省得多。大文件用 offset/limit 分段读；"
-        "二进制文件（图片、压缩包）读不了。"
+        "PDF/Word/Excel 文档用 fs_read_document；图片、压缩包读不了。"
     )
 
     parameters = {
@@ -103,8 +116,10 @@ class WriteFileTool(_FsTool):
     name = "fs_write_file"
     description = (
         "把文本内容写入文件，整个文件会被覆盖。"
-        "path 可以是相对路径或绝对路径；父目录不存在会自动创建。"
-        "这是写操作，执行前需要用户确认。"
+        "path 可以是相对路径（相对工作目录）或绝对路径；"
+        "也允许写进 OhoPilot 数据家目录（~/.ohopilot）的子目录，"
+        "但其中的数据库和 MEMORY.md 只能走专用通道，直接写会被拒绝。"
+        "父目录不存在会自动创建。这是写操作，执行前需要用户确认。"
     )
 
     parameters = {
@@ -127,17 +142,27 @@ class WriteFileTool(_FsTool):
             )
 
         target, inside = self._resolve(path)
+        home_inside = self._is_under(target, self.cfg.home)
 
-        # 防线一：硬边界。越出工作目录的写操作直接拒绝
-        if not inside:
+        # 防线一：硬边界。只许写工作目录和数据家目录两个根之内。
+        # 家目录是 agent 自己的地盘，写它不碰用户其他文件——放行；
+        # 除此之外的任何位置（桌面、文档、其他仓库）一律拒绝。
+        if not inside and not home_inside:
             return ToolResult.fail(
-                f"路径超出工作目录，已拒绝：{target}\n"
-                f"写操作只允许在工作目录内进行：{self.cfg.workspace}"
+                f"路径超出可写范围，已拒绝：{target}\n"
+                f"写操作只允许在工作目录（{self.cfg.workspace}）"
+                f"或 OhoPilot 数据家目录（{self.cfg.home}）内进行。"
             )
 
-        # 防线二：硬禁止清单（基类共用）。workspace/.env 和 workspace/sub/.env 都会被拦住
+        # 防线二：硬禁止清单。.env/.git 任何位置都禁；
+        # 家目录下的数据库/记忆文件另有专用通道，裸写一律拒绝
         if self._is_protected(target):
             return ToolResult.fail(f"禁止写入受保护路径：{target}")
+        if home_inside and target.name in self.HOME_WRITE_PROTECTED:
+            return ToolResult.fail(
+                f"{target.name} 是 OhoPilot 的内部文件，不能直接写：\n"
+                "长期记忆请用 memory_append 工具；数据库由系统自己维护。"
+            )
 
         try:
             # parents=True：模型经常要"在子目录里新建文件"，父目录得能自动建

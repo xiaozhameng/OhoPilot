@@ -973,6 +973,29 @@ pre {
   color: var(--muted);
 }
 
+.composer__attach {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  transition: background 0.12s, color 0.12s;
+}
+
+.composer__attach:hover:not(:disabled) {
+  background: var(--code-bg);
+  color: var(--text-2);
+}
+
+.composer__attach:disabled {
+  opacity: 0.4;
+}
+
 .composer__send {
   flex: 0 0 auto;
   width: 32px;

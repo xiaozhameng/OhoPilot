@@ -103,14 +103,14 @@ async def test_写出工作目录直接拒绝(cfg, tmp_path):
     result = await WriteFileTool(cfg).run(path=str(outside), content="x")
 
     assert result.is_error
-    assert "超出工作目录" in result.content
+    assert "超出可写范围" in result.content
     assert not outside.exists()
 
 
 async def test_写相对路径跳出工作目录也拒绝(cfg):
     result = await WriteFileTool(cfg).run(path="../../evil.txt", content="x")
     assert result.is_error
-    assert "超出工作目录" in result.content
+    assert "超出可写范围" in result.content
 
 
 async def test_禁止覆盖_env(cfg, writer):
@@ -258,3 +258,36 @@ async def test_相对路径都落回工作目录(cfg, raw):
 def test_ToolResult_两个构造器语义清楚():
     assert ToolResult.ok("a").is_error is False
     assert ToolResult.fail("a").is_error is True
+
+
+# ---------- 写边界：工作目录 ∪ 数据家目录 ----------
+
+async def test_写进数据家目录的子目录允许(cfg):
+    """家目录是 agent 自己的地盘（上传文件、整理技能都在这），放行。"""
+    result = await WriteFileTool(cfg).run(path=str(cfg.home / "uploads" / "x.txt"), content="hi")
+    assert not result.is_error
+    assert (cfg.home / "uploads" / "x.txt").read_text() == "hi"
+
+
+async def test_家目录内部文件拒绝裸写(cfg):
+    """数据库和 MEMORY.md 各有专用通道：store 层 / memory_append。
+    fs_write_file 拿文本去写二进制库文件必坏，必须拦。"""
+    for name in ("ohopilot.db", "ohopilot.db-journal", "MEMORY.md"):
+        result = await WriteFileTool(cfg).run(path=str(cfg.home / name), content="x")
+        assert result.is_error, name
+        assert "memory_append" in result.content or "专用" in result.content
+
+
+async def test_家目录和工作目录之外仍拒绝(cfg, tmp_path):
+    """放开了家目录，不等于全盘可写：桌面、其他仓库照样拒。"""
+    outside = tmp_path / "elsewhere" / "a.txt"
+    result = await WriteFileTool(cfg).run(path=str(outside), content="x")
+    assert result.is_error
+    assert "可写范围" in result.content
+
+
+async def test_工作目录下的同名内部文件不受家目录保护清单影响(cfg):
+    """保护清单只对家目录生效：用户工作目录里自己有个 MEMORY.md 是合法文件。"""
+    result = await WriteFileTool(cfg).run(path="MEMORY.md", content="用户自己的文件")
+    assert not result.is_error
+    assert (cfg.workspace / "MEMORY.md").read_text() == "用户自己的文件"

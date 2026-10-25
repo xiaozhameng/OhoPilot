@@ -7,6 +7,7 @@ import {
   fetchSessionTodos,
   fetchSessions,
   saveSettings,
+  uploadFile,
 } from "./api";
 import { ApprovalBar } from "./components/ApprovalBar";
 import { Composer } from "./components/Composer";
@@ -152,6 +153,18 @@ export default function App() {
     setHealth(next);
   }
 
+  // 上传成功后把绝对路径回填进输入框：文件存在数据家目录（~/.ohopilot/uploads），
+  // 不在 workspace 内，相对路径会解析错，必须用绝对路径；模型看到路径就会用 fs_read_document 去读。
+  // 不自动发送——用户通常还想先说清楚要拿这份文件干什么。
+  async function handleUpload(file: File) {
+    try {
+      const path = await uploadFile(file);
+      setDraft((prev) => `${prev ? prev + "\n" : ""}（附件已上传到数据目录：${path}）`);
+    } catch (err) {
+      dispatch({ type: "error", message: `上传失败：${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
   // 标题取第一句用户提问，和左侧会话列表的规则一致（后端也是这么取 title 的）
   const firstUserBlock = state.messages.find((m) => m.role === "user")?.blocks[0];
   const rawTitle = firstUserBlock?.kind === "text" ? firstUserBlock.text : "新对话";
@@ -207,6 +220,7 @@ export default function App() {
             onChange={setDraft}
             onSend={() => void send()}
             onStop={() => abortRef.current?.abort()}
+            onUpload={handleUpload}
           />
 
           {(state.totalTokens > 0 || health) && (

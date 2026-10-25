@@ -71,6 +71,16 @@ export async function answerApproval(callId: string, allow: boolean): Promise<vo
   if (!resp.ok && resp.status !== 404) throw new Error(await readError(resp));
 }
 
+/** 上传文件到服务端 uploads/，返回工作目录内的相对路径。 */
+export async function uploadFile(file: File): Promise<string> {
+  const form = new FormData();
+  form.append("file", file);
+  const resp = await fetch(`${BASE}/files`, { method: "POST", body: form });
+  if (!resp.ok) throw new Error(await readError(resp));
+  const body = (await resp.json()) as { path: string };
+  return body.path;
+}
+
 export async function saveSettings(input: {
   model?: string;
   workspace?: string;

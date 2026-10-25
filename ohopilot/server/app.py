@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +36,11 @@ from ohopilot.server.approvals import ApprovalBroker
 
 #: 前端构建产物（web/ 里 npm run build 会输出到这里）
 STATIC_DIR = Path(__file__).parent / "static"
+
+#: 上传上限 20MB：文档类够用，也防一次请求把内存吃满
+UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+#: 文件名里不允许出现的字符（Windows 保留字符 + 控制场景），统一替换成下划线
+_UNSAFE_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 @asynccontextmanager
@@ -154,6 +161,39 @@ def create_app() -> FastAPI:
         rt: Runtime = request.app.state.rt
         rt.todos.set_session(session_id)
         return {"session_id": session_id, "items": rt.todos.list_items()}
+
+    @app.post("/files")
+    async def upload_file(request: Request, file: UploadFile) -> dict[str, Any]:
+        """上传文件到数据家目录的 uploads/ 子目录，返回绝对路径。
+
+        为什么存 ~/.ohopilot/uploads 而不是 workspace：
+        上传的是用户的运行时数据，该住数据家目录（和数据库、技能同层），
+        安装目录/workspace 保持干净。agent 仍能读——读操作不受工作目录
+        限制（那是写操作的边界），模型拿绝对路径就能 fs_read_document。
+        重名不覆盖——覆盖用户已有文件太危险，加时间戳后缀另存。
+        """
+        rt: Runtime = request.app.state.rt
+        raw_name = Path(file.filename or "").name  # 只留文件名本身，剥掉任何路径成分
+        if not raw_name:
+            raise HTTPException(status_code=400, detail="缺少文件名")
+        name = _UNSAFE_CHARS.sub("_", raw_name)
+
+        data = await file.read()
+        if len(data) > UPLOAD_LIMIT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"文件超过上传上限（{UPLOAD_LIMIT_BYTES // (1024 * 1024)}MB）",
+            )
+
+        uploads = rt.cfg.home / "uploads"
+        uploads.mkdir(parents=True, exist_ok=True)
+        target = uploads / name
+        if target.exists():
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target = uploads / f"{target.stem}_{stamp}{target.suffix}"
+        target.write_bytes(data)
+        # 返回绝对路径：uploads 已不在 workspace 内，相对路径 fs 工具会解析错地方
+        return {"path": str(target), "size": len(data)}
 
     @app.get("/usage")
     async def usage(

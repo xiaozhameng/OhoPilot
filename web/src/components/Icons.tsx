@@ -107,6 +107,14 @@ export function IconChart({ size = 15, className }: IconProps) {
   );
 }
 
+export function IconPaperclip({ size = 15, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className} aria-hidden="true">
+      <path d="M21 11.5l-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.9-8.9a3.7 3.7 0 0 1 5.2 5.2l-8.9 8.9a1.85 1.85 0 0 1-2.6-2.6L15.5 7" />
+    </svg>
+  );
+}
+
 /** 品牌标：一个开口的圆环 + 一个点，对应「哦豁」那种语气。 */
 export function Logo({ size = 26 }: IconProps) {
   return (

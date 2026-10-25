@@ -17,9 +17,12 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
-# 可选依赖组。server 是第 15 步才用的；dev 是测试用的。装的时候写 pip install -e ".[dev]"
+# 可选依赖组。server 是第 15 步才用的；docs 是第 21 步文档解析（PDF/Word/Excel）用的，
+# 三个解析库加起来上百 MB，不该让只想要聊天功能的用户被迫装；dev 是测试用的。
+# 装的时候写 pip install -e ".[server]" / ".[docs]" / ".[dev]"
 [project.optional-dependencies]
-server = ["fastapi>=0.110", "uvicorn>=0.29"]
+server = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
+docs = ["pypdf>=4.0", "python-docx>=1.1", "openpyxl>=3.1"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 # 关键一行：oho = "ohopilot.cli:main" 读作「装完后生成一个叫 oho 的命令，它执行 ohopilot/cli.py 里的 main 函数」

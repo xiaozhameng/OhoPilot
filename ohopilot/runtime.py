@@ -22,6 +22,7 @@ from ohopilot.memory.store import SessionStore
 from ohopilot.memory.summarize import maybe_summarize
 from ohopilot.memory.todo import TodoStore
 from ohopilot.tools.base import ToolRegistry
+from ohopilot.tools.docs import build_docs_tools
 from ohopilot.tools.fs import build_fs_tools
 from ohopilot.tools.memory import MemoryAppendTool
 from ohopilot.tools.search import build_search_tools
@@ -63,6 +64,7 @@ class Runtime:
         registry = ToolRegistry(
             [
                 *build_fs_tools(cfg),
+                *build_docs_tools(cfg),
                 *build_web_tools(),
                 *build_search_tools(cfg),
                 *build_skill_tools(cfg),

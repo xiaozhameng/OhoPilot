@@ -83,7 +83,7 @@ async def test_health_报告配置与工具清单(server):
     assert resp.status_code == 200
     assert body["ok"] is True
     assert set(body["tools"]) == {
-        "fs_read_file", "fs_write_file", "fs_list_dir", "fs_search",
+        "fs_read_file", "fs_write_file", "fs_list_dir", "fs_search", "fs_read_document",
         "web_fetch", "web_search", "skill_load", "memory_append", "shell_run",
         "todo_write", "todo_update",
     }
@@ -357,6 +357,61 @@ async def test_usage_端点返回总账与会话流水(server):
     assert body["calls"][0]["session_id"] == session_id
     # 模型名由 runtime 补上——agent 不管这件事
     assert body["calls"][0]["model"] == server.rt.cfg.model
+
+
+async def test_files_上传落到数据家目录(server):
+    """上传 → 存进 ~/.ohopilot/uploads/ → 返回绝对路径。
+
+    上传是用户运行时数据，该住数据家目录而不是安装目录/workspace；
+    agent 仍能读（读不受工作目录限制），拿绝对路径就能 fs_read_document。
+    """
+    resp = await server.client.post(
+        "/files",
+        files={"file": ("报表.pdf", b"%PDF-1.4 fake", "application/pdf")},
+    )
+    body = resp.json()
+
+    assert resp.status_code == 200
+    expected = server.rt.cfg.home / "uploads" / "报表.pdf"
+    assert body["path"] == str(expected)
+    assert expected.read_bytes() == b"%PDF-1.4 fake"
+
+
+async def test_files_重名不覆盖(server):
+    """同名文件第二次上传要另存——覆盖用户已有文件太危险。"""
+    payload = {"file": ("a.txt", b"v1", "text/plain")}
+    first = (await server.client.post("/files", files=payload)).json()
+    second = (await server.client.post("/files", files=payload)).json()
+
+    assert first["path"] != second["path"]
+    assert second["path"].startswith(str(server.rt.cfg.home / "uploads" / "a_"))
+
+
+async def test_files_上传后agent能读到(server):
+    """端到端证明：文件搬进数据家目录后，agent 的解析工具拿绝对路径仍能读。
+    这是「uploads 搬家不丢功能」这一设计决策的回归测试。"""
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    from ohopilot.tools.docs import ReadDocumentTool
+
+    wb = Workbook()
+    wb.active.append(["姓名", "分数"])
+    wb.active.append(["小明", 98])
+    buf = BytesIO()
+    wb.save(buf)
+
+    resp = await server.client.post(
+        "/files",
+        files={"file": ("成绩.xlsx", buf.getvalue(), "application/vnd.ms-excel")},
+    )
+    path = resp.json()["path"]
+
+    tool = ReadDocumentTool(server.rt.cfg)
+    result = await tool.safe_run({"path": path})
+    assert not result.is_error
+    assert "小明" in result.content and "98" in result.content
 
 
 async def test_todos_端点恢复清单(server):

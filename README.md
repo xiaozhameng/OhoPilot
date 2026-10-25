@@ -24,6 +24,14 @@ pip install -e ".[dev,server]"
 cp .env.example .env
 ```
 
+**可选依赖组**：核心功能零额外依赖；用到对应功能再装，缺库时工具会报错并提示安装命令。
+
+| 组 | 装法 | 解锁的功能 |
+|---|---|---|
+| `server` | 已含在快速开始里 | HTTP 服务 + 网页工作台 |
+| `docs` | `pip install "ohopilot[docs]"` | `fs_read_document` 读 PDF / Word / Excel（三个解析库共约 40MB） |
+| `dev` | `pip install "ohopilot[dev]"` | 跑测试 |
+
 打开 `.env` 填上 `OHOPILOT_API_KEY`，然后一条命令起网页版：
 
 ```bash
