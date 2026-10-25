@@ -84,6 +84,15 @@ class Config:
     tavily_api_key: str = ""
     bocha_api_key: str = ""
 
+    # 知识库 RAG：embedding 和向量库分开配。
+    # embedding_model 不配 = 知识库工具不可用（报错带配置指引，不静默坏）
+    embedding_model: str = ""
+    embedding_api_base: str = ""
+    embedding_api_key: str = ""
+    # 向量后端：sqlite-vec（默认，零服务）/ milvus（独立服务）
+    vector_backend: str = "sqlite-vec"
+    milvus_uri: str = ""
+
     # 由home 派生出来的路径，不单独存储
     @property
     def skills_dir(self) -> Path:
@@ -131,4 +140,9 @@ class Config:
             searxng_base_url=_get("SEARXNG_BASE_URL", "http://127.0.0.1:8080").rstrip("/"),
             tavily_api_key=_get("TAVILY_API_KEY"),
             bocha_api_key=_get("BOCHA_API_KEY"),
+            embedding_model=_get("EMBEDDING_MODEL"),
+            embedding_api_base=_get("EMBEDDING_API_BASE"),
+            embedding_api_key=_get("EMBEDDING_API_KEY"),
+            vector_backend=_get("VECTOR_BACKEND", "sqlite-vec").lower(),
+            milvus_uri=_get("MILVUS_URI"),
         )

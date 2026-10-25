@@ -24,6 +24,7 @@ from ohopilot.memory.todo import TodoStore
 from ohopilot.tools.base import ToolRegistry
 from ohopilot.tools.docs import build_docs_tools
 from ohopilot.tools.fs import build_fs_tools
+from ohopilot.tools.kb import build_kb_tools
 from ohopilot.tools.memory import MemoryAppendTool
 from ohopilot.tools.search import build_search_tools
 from ohopilot.tools.shell import ShellTool
@@ -65,6 +66,7 @@ class Runtime:
             [
                 *build_fs_tools(cfg),
                 *build_docs_tools(cfg),
+                *build_kb_tools(cfg),
                 *build_web_tools(),
                 *build_search_tools(cfg),
                 *build_skill_tools(cfg),

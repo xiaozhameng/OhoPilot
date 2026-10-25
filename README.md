@@ -7,7 +7,7 @@
 
 ## 它有什么
 
-- **9 个内置工具**：读/写/列目录/搜索、执行 shell、抓网页、**搜网页**、写长期记忆、取技能正文。
+- **14 个内置工具**：读/写/列目录/搜索、读 PDF/Word/Excel、执行 shell、抓网页、**搜网页**、写长期记忆、取技能正文、任务清单（todo）、知识库索引/语义检索（kb）。
 - **三档 shell 判定**：只读命令静默执行，改动类弹审批，提权删根类直接拒绝。
 - **三层安全边界**：工作目录硬边界 → 硬禁止清单（`.env`/`.git`/凭据目录）→ 人工审批。
 - **两层记忆**：会话历史（SQLite，滚动摘要压缩）+ 长期记忆（`MEMORY.md`，注入每轮提示词）。
@@ -30,7 +30,10 @@ cp .env.example .env
 |---|---|---|
 | `server` | 已含在快速开始里 | HTTP 服务 + 网页工作台 |
 | `docs` | `pip install "ohopilot[docs]"` | `fs_read_document` 读 PDF / Word / Excel（三个解析库共约 40MB） |
+| `rag` | `pip install "ohopilot[rag]"` | 知识库 `kb_index` / `kb_search`（另需配 embedding，见 `.env.example`；sqlite-vec 零服务默认，Milvus 可切） |
 | `dev` | `pip install "ohopilot[dev]"` | 跑测试 |
+
+> 小提示：`.env` 里加 `LITELLM_LOCAL_MODEL_COST_MAP=True` 可以跳过 litellm 启动时联网拉模型价格表（国内网络会白等约 3 秒）。
 
 打开 `.env` 填上 `OHOPILOT_API_KEY`，然后一条命令起网页版：
 

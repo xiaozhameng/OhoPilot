@@ -85,7 +85,7 @@ async def test_health_报告配置与工具清单(server):
     assert set(body["tools"]) == {
         "fs_read_file", "fs_write_file", "fs_list_dir", "fs_search", "fs_read_document",
         "web_fetch", "web_search", "skill_load", "memory_append", "shell_run",
-        "todo_write", "todo_update",
+        "todo_write", "todo_update", "kb_index", "kb_search",
     }
     assert body["pending_approvals"] == 0
 

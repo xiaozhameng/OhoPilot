@@ -98,11 +98,11 @@ class ReadDocumentTool(_FsTool):
 
         try:
             if suffix == ".pdf":
-                text, meta = self._read_pdf(target, page)
+                text, meta = read_pdf_text(target, page)
             elif suffix == ".docx":
-                text, meta = self._read_docx(target)
+                text, meta = read_docx_text(target)
             else:
-                text, meta = self._read_xlsx(target, sheet)
+                text, meta = read_xlsx_text(target, sheet)
         except _DependencyMissing as exc:
             return ToolResult.fail(exc.hint)
         except ValueError as exc:
@@ -118,106 +118,109 @@ class ReadDocumentTool(_FsTool):
         header = f"{target}\n{meta['summary']}\n\n"
         return ToolResult.ok(header + text + note)
 
-    # ---------- 三个解析器 ----------
+# ---------- 三个解析器（模块级函数，知识库索引同样复用） ----------
 
-    def _read_pdf(self, target: Path, page: int | None) -> tuple[str, dict[str, str]]:
-        try:
-            from pypdf import PdfReader
-        except ImportError as exc:
-            raise _DependencyMissing("pypdf", "PDF") from exc
 
-        reader = PdfReader(str(target))
-        total = len(reader.pages)
-        if total == 0:
-            return "", {"summary": "PDF 共 0 页（空文档）", "tail_hint": "本文档没有文本内容"}
+def read_pdf_text(target: Path, page: int | None) -> tuple[str, dict[str, str]]:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise _DependencyMissing("pypdf", "PDF") from exc
 
-        if page is not None:
-            if not 1 <= page <= total:
-                hint = f"page={page} 超出范围：这份 PDF 共 {total} 页（1-{total}），请改用范围内的页码。"
-                return hint, {"summary": f"PDF 共 {total} 页", "tail_hint": "改用范围内的页码"}
-            text = reader.pages[page - 1].extract_text() or "（这一页没有可提取的文本）"
-            return text, {"summary": f"PDF 共 {total} 页，显示第 {page} 页", "tail_hint": f"用 page 参数看其他页（共 {total} 页）"}
+    reader = PdfReader(str(target))
+    total = len(reader.pages)
+    if total == 0:
+        return "", {"summary": "PDF 共 0 页（空文档）", "tail_hint": "本文档没有文本内容"}
 
-        parts = [f"--- 第 {i + 1} 页 ---\n{p.extract_text() or '（无文本）'}" for i, p in enumerate(reader.pages)]
-        return "\n\n".join(parts), {
-            "summary": f"PDF 共 {total} 页",
-            "tail_hint": f"可用 page 参数指定看第几页（共 {total} 页）",
-        }
+    if page is not None:
+        if not 1 <= page <= total:
+            hint = f"page={page} 超出范围：这份 PDF 共 {total} 页（1-{total}），请改用范围内的页码。"
+            return hint, {"summary": f"PDF 共 {total} 页", "tail_hint": "改用范围内的页码"}
+        text = reader.pages[page - 1].extract_text() or "（这一页没有可提取的文本）"
+        return text, {"summary": f"PDF 共 {total} 页，显示第 {page} 页", "tail_hint": f"用 page 参数看其他页（共 {total} 页）"}
 
-    def _read_docx(self, target: Path) -> tuple[str, dict[str, str]]:
-        try:
-            import docx  # python-docx
-        except ImportError as exc:
-            raise _DependencyMissing("python-docx", "Word") from exc
+    parts = [f"--- 第 {i + 1} 页 ---\n{p.extract_text() or '（无文本）'}" for i, p in enumerate(reader.pages)]
+    return "\n\n".join(parts), {
+        "summary": f"PDF 共 {total} 页",
+        "tail_hint": f"可用 page 参数指定看第几页（共 {total} 页）",
+    }
 
-        document = docx.Document(str(target))
-        # 段落和表格要按文档里的真实顺序交错输出——
-        # document.paragraphs 和 document.tables 是两个平行列表，
-        # 直接各拼一段会打乱「上下文 → 数据表 → 结论」的阅读顺序。
-        # document.element.body 按顺序给节点，逐个判类型还原真实顺序。
-        lines: list[str] = []
-        from docx.table import Table
-        from docx.text.paragraph import Paragraph
 
-        body = document.element.body
-        para_count = table_count = 0
-        for child in body.iterchildren():
-            if child.tag.endswith("}p"):
-                paragraph = Paragraph(child, document)
-                if paragraph.text.strip():
-                    lines.append(paragraph.text)
-                    para_count += 1
-            elif child.tag.endswith("}tbl"):
-                table = Table(child, document)
-                table_count += 1
-                lines.append(f"\n[表格 {table_count}]")
-                for row in table.rows:
-                    cells = [cell.text.strip() for cell in row.cells]
-                    lines.append("\t".join(cells))
-                lines.append("")
+def read_docx_text(target: Path) -> tuple[str, dict[str, str]]:
+    try:
+        import docx  # python-docx
+    except ImportError as exc:
+        raise _DependencyMissing("python-docx", "Word") from exc
 
-        return "\n".join(lines), {
-            "summary": f"Word 文档：{para_count} 个段落、{table_count} 个表格",
-            "tail_hint": "内容有截断，可让用户拆分文档或复制需要的部分",
-        }
+    document = docx.Document(str(target))
+    # 段落和表格要按文档里的真实顺序交错输出——
+    # document.paragraphs 和 document.tables 是两个平行列表，
+    # 直接各拼一段会打乱「上下文 → 数据表 → 结论」的阅读顺序。
+    # document.element.body 按顺序给节点，逐个判类型还原真实顺序。
+    lines: list[str] = []
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
-    def _read_xlsx(self, target: Path, sheet: str | None) -> tuple[str, dict[str, str]]:
-        try:
-            import openpyxl
-        except ImportError as exc:
-            raise _DependencyMissing("openpyxl", "Excel") from exc
+    body = document.element.body
+    para_count = table_count = 0
+    for child in body.iterchildren():
+        if child.tag.endswith("}p"):
+            paragraph = Paragraph(child, document)
+            if paragraph.text.strip():
+                lines.append(paragraph.text)
+                para_count += 1
+        elif child.tag.endswith("}tbl"):
+            table = Table(child, document)
+            table_count += 1
+            lines.append(f"\n[表格 {table_count}]")
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                lines.append("\t".join(cells))
+            lines.append("")
 
-        # read_only=True 流式读取，几百 MB 的报表不会整个load进内存
-        workbook = openpyxl.load_workbook(target, read_only=True, data_only=True)
-        try:
-            names = workbook.sheetnames[:MAX_SHEETS]
-            if sheet is not None:
-                if sheet not in workbook.sheetnames:
-                    return "", {
-                        "summary": f"没有叫「{sheet}」的工作表。现有的：{'、'.join(names)}",
-                        "tail_hint": "用 sheet 参数指定上面列表中的名字",
-                    }
-                names = [sheet]
+    return "\n".join(lines), {
+        "summary": f"Word 文档：{para_count} 个段落、{table_count} 个表格",
+        "tail_hint": "内容有截断，可让用户拆分文档或复制需要的部分",
+    }
 
-            blocks: list[str] = []
-            for name in names:
-                ws = workbook[name]
-                rows: list[str] = []
-                for row in ws.iter_rows(max_row=MAX_ROWS_PER_SHEET, values_only=True):
-                    # 空行剪枝：Excel 里大量「看着空其实有格式」的行，不剪会浪费大量上下文
-                    if all(v is None or str(v).strip() == "" for v in row):
-                        continue
-                    rows.append("\t".join("" if v is None else str(v) for v in row))
-                total_rows = ws.max_row or 0
-                block = f"[工作表 {name}]（共 {total_rows} 行，显示 {len(rows)} 行）\n" + "\n".join(rows)
-                if total_rows > MAX_ROWS_PER_SHEET:
-                    block += f"\n（已截断，只读了前 {MAX_ROWS_PER_SHEET} 行）"
-                blocks.append(block)
 
-            summary = f"Excel：{len(workbook.sheetnames)} 个工作表（{'、'.join(workbook.sheetnames[:MAX_SHEETS])}）"
-            return "\n\n".join(blocks), {"summary": summary, "tail_hint": "用 sheet 参数分次看各工作表"}
-        finally:
-            workbook.close()
+def read_xlsx_text(target: Path, sheet: str | None) -> tuple[str, dict[str, str]]:
+    try:
+        import openpyxl
+    except ImportError as exc:
+        raise _DependencyMissing("openpyxl", "Excel") from exc
+
+    # read_only=True 流式读取，几百 MB 的报表不会整个load进内存
+    workbook = openpyxl.load_workbook(target, read_only=True, data_only=True)
+    try:
+        names = workbook.sheetnames[:MAX_SHEETS]
+        if sheet is not None:
+            if sheet not in workbook.sheetnames:
+                return "", {
+                    "summary": f"没有叫「{sheet}」的工作表。现有的：{'、'.join(names)}",
+                    "tail_hint": "用 sheet 参数指定上面列表中的名字",
+                }
+            names = [sheet]
+
+        blocks: list[str] = []
+        for name in names:
+            ws = workbook[name]
+            rows: list[str] = []
+            for row in ws.iter_rows(max_row=MAX_ROWS_PER_SHEET, values_only=True):
+                # 空行剪枝：Excel 里大量「看着空其实有格式」的行，不剪会浪费大量上下文
+                if all(v is None or str(v).strip() == "" for v in row):
+                    continue
+                rows.append("\t".join("" if v is None else str(v) for v in row))
+            total_rows = ws.max_row or 0
+            block = f"[工作表 {name}]（共 {total_rows} 行，显示 {len(rows)} 行）\n" + "\n".join(rows)
+            if total_rows > MAX_ROWS_PER_SHEET:
+                block += f"\n（已截断，只读了前 {MAX_ROWS_PER_SHEET} 行）"
+            blocks.append(block)
+
+        summary = f"Excel：{len(workbook.sheetnames)} 个工作表（{'、'.join(workbook.sheetnames[:MAX_SHEETS])}）"
+        return "\n\n".join(blocks), {"summary": summary, "tail_hint": "用 sheet 参数分次看各工作表"}
+    finally:
+        workbook.close()
 
 
 def build_docs_tools(cfg: Config) -> list[Tool]:

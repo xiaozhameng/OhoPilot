@@ -57,7 +57,7 @@ OhoPilot = 桌面优先的**办公助手**：
   - `fs_read_document`：PDF（pypdf）、docx、xlsx → 纯文本，分页/分表截断
   - 归入可选依赖组 `[docs]`
   - 追加：网页 📎 上传入口（POST /files → `~/.ohopilot/uploads/`，重名不覆盖）
-- [ ] **22. 个人知识库 RAG**（语义找回：文档大了以后按需检索）
+- [x] **22. 个人知识库 RAG**（语义找回：文档大了以后按需检索）✅ 2026-10-25
   - **向量库接口 + 双实现**（用户拍板）：`VectorStore` 统一接口（add/search/delete），
     `sqlite-vec` 适配器（默认，零服务）+ `Milvus` 适配器（用户本地 Docker 已装），
     `OHOPILOT_VECTOR_BACKEND=sqlite-vec|milvus` 一键切换

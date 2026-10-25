@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 server = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
 docs = ["pypdf>=4.0", "python-docx>=1.1", "openpyxl>=3.1"]
+rag = ["sqlite-vec>=0.1.6", "pymilvus>=2.4"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 # 关键一行：oho = "ohopilot.cli:main" 读作「装完后生成一个叫 oho 的命令，它执行 ohopilot/cli.py 里的 main 函数」
