@@ -336,3 +336,36 @@ async def test_客户端断开时审批按拒绝处理():
 
     assert result is False
     assert broker.pending_count == 0
+
+
+# ---------- /usage 开发者面板（第 18 步） ----------
+
+async def test_usage_端点返回总账与会话流水(server):
+    """跑一轮真实链路（FakeAgent 会发 usage 事件），用量应被 runtime 落库。"""
+    server.rt.agent = FakeAgent()
+    resp = await server.client.post("/chat", json={"message": "在吗"})
+    assert resp.status_code == 200
+    session_id = resp.headers["x-session-id"]
+
+    body = (await server.client.get("/usage")).json()
+
+    assert body["summary"]["calls"] == 1
+    assert body["summary"]["prompt_tokens"] == 1
+    assert body["summary"]["completion_tokens"] == 2
+    assert len(body["calls"]) == 1
+    assert body["calls"][0]["session_id"] == session_id
+    # 模型名由 runtime 补上——agent 不管这件事
+    assert body["calls"][0]["model"] == server.rt.cfg.model
+
+
+async def test_usage_可按会话过滤(server):
+    server.rt.agent = FakeAgent()
+    sid_a = (await server.client.post("/chat", json={"message": "甲"})).headers["x-session-id"]
+    sid_b = (await server.client.post("/chat", json={"message": "乙"})).headers["x-session-id"]
+
+    body_a = (await server.client.get("/usage", params={"session_id": sid_a})).json()
+    body_b = (await server.client.get("/usage", params={"session_id": sid_b})).json()
+
+    assert body_a["summary"]["calls"] == 1
+    assert body_b["summary"]["calls"] == 1
+    assert body_a["calls"][0]["session_id"] != body_b["calls"][0]["session_id"]

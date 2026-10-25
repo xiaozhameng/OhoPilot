@@ -28,6 +28,13 @@ export interface RawEvent {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  /** 第 18 步起 usage 事件携带的观测字段 */
+  round_no?: number;
+  cache_hit_tokens?: number;
+  cache_miss_tokens?: number;
+  duration_ms?: number;
+  first_token_ms?: number;
+  context?: Record<string, number>;
   message?: string;
   session_id?: string;
 }
@@ -82,4 +89,37 @@ export interface PendingApproval {
 export interface HistoryMessage {
   role: "user" | "assistant";
   content: string;
+}
+
+/** 一次模型调用的用量流水（GET /usage 的 calls 项）。 */
+export interface UsageCall {
+  id: number;
+  session_id: string;
+  created_at: string;
+  round_no: number;
+  model: string;
+  prompt_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  duration_ms: number;
+  first_token_ms: number;
+  ctx_system: number;
+  ctx_history: number;
+  ctx_question: number;
+  ctx_tool_results: number;
+}
+
+/** GET /usage 的 summary。cache_hit_rate 是 0~1 的小数。 */
+export interface UsageSummary {
+  calls: number;
+  prompt_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cache_hit_rate: number;
+  avg_first_token_ms: number;
+  total_duration_ms: number;
 }

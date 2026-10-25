@@ -4,6 +4,7 @@
 """
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -48,6 +49,15 @@ class AssistantTurn:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    # ---- 可观测性字段（第 18 步）----
+    # DeepSeek 对「命中前缀缓存」的输入按约 1/10 计价，所以命中率是最值钱的指标：
+    # 命中率低 → 说明每次请求的前缀都在变（比如把时间戳放进了系统提示），先修它。
+    # 这两个字段各家返回位置不一：DeepSeek 顶层给 prompt_cache_hit_tokens，
+    # OpenAI 风格塞在 usage.prompt_tokens_details.cached_tokens 里，这里两处都试。
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
+    duration_ms: int = 0       # 本次调用总耗时
+    first_token_ms: int = 0    # 从发请求到收到第一个增量的延迟（用户感知的"等多久开始出字"）
 
 class LLMError(RuntimeError):
     """把底层异常包一层，方便界面统一提示。"""
@@ -77,6 +87,27 @@ def has_credentials(cfg: Config) -> bool:
     base = (cfg.api_base or "").lower()
     return any(token in base for token in ("localhost", "127.0.0.1", "0.0.0.0"))
 
+def _cache_fields(usage: Any) -> tuple[int, int]:
+    """从 usage 对象里尽量挖出 (缓存命中, 缓存未命中) 的 token 数。
+
+    挖不到就退回 (0, prompt_tokens)：宁可把全部 prompt 算成"未命中"，
+    也不要谎报 100% 命中——命中率是被拿来做优化决策的，虚高会误导。
+    """
+    prompt = getattr(usage, "prompt_tokens", 0) or 0
+    hit = getattr(usage, "prompt_cache_hit_tokens", None)
+    miss = getattr(usage, "prompt_cache_miss_tokens", None)
+    if hit is None:
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = getattr(details, "cached_tokens", None) if details is not None else None
+        if cached is not None:
+            hit = cached
+    if hit is None:
+        return 0, int(prompt)
+    if miss is None:
+        miss = int(prompt) - int(hit)
+    return int(hit or 0), max(int(miss or 0), 0)
+
+
 async def stream_chat(
         cfg: Config,
         messages: list[dict[str, Any]],
@@ -104,6 +135,9 @@ async def stream_chat(
     text_parts: list[str] = []
     slots: dict[int, dict[str, str]] = {}
     prompt_tokens = completion_tokens = total_tokens = 0
+    cache_hit_tokens = cache_miss_tokens = 0
+    started = time.monotonic()
+    first_token_ms = 0
 
     try:
         response = await litellm.acompletion(**kwargs)
@@ -113,6 +147,7 @@ async def stream_chat(
                 prompt_tokens = getattr(chunk_usage, "prompt_tokens", 0) or prompt_tokens
                 completion_tokens = getattr(chunk_usage, "completion_tokens", 0) or completion_tokens
                 total_tokens = getattr(chunk_usage, "total_tokens", 0) or total_tokens
+                cache_hit_tokens, cache_miss_tokens = _cache_fields(chunk_usage)
 
             choice = getattr(chunk, "choices", None)
             if not choice:
@@ -123,10 +158,16 @@ async def stream_chat(
 
             content = getattr(delta, "content", None)
             if content:
+                if not first_token_ms:
+                    first_token_ms = int((time.monotonic() - started) * 1000)
                 text_parts.append(content)
                 yield "text", content
 
-            _accumulate_tool_calls(slots, getattr(delta, "tool_calls", None))
+            tool_delta = getattr(delta, "tool_calls", None)
+            if tool_delta and not first_token_ms:
+                # 模型先吐工具调用也算"开始响应了"：用户感知的延迟一样成立
+                first_token_ms = int((time.monotonic() - started) * 1000)
+            _accumulate_tool_calls(slots, tool_delta)
     except Exception as exc:
         raise LLMError(f"模型调用失败：{type(exc).__name__}: {exc}") from exc
 
@@ -156,6 +197,10 @@ async def stream_chat(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            cache_hit_tokens=cache_hit_tokens,
+            cache_miss_tokens=cache_miss_tokens,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            first_token_ms=first_token_ms,
         ),
     )
 

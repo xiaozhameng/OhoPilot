@@ -1,25 +1,37 @@
 import { useEffect, useState } from "react";
-import type { Block, Health } from "../types";
+import { fetchUsage } from "../api";
+import type { Block, Health, UsageCall, UsageSummary } from "../types";
 import { IconClose } from "./Icons";
 
 type ToolBlock = Extract<Block, { kind: "tool" }>;
-export type DrawerMode = "tool" | "settings" | null;
+export type DrawerMode = "tool" | "settings" | "usage" | null;
 
 interface DrawerProps {
   mode: DrawerMode;
   tool: ToolBlock | null;
   health: Health | null;
+  sessionId: string | null;
   onClose: () => void;
   onSaveSettings: (input: { model: string; workspace: string }) => Promise<void>;
 }
 
-export function Drawer({ mode, tool, health, onClose, onSaveSettings }: DrawerProps) {
+export function Drawer({
+  mode,
+  tool,
+  health,
+  sessionId,
+  onClose,
+  onSaveSettings,
+}: DrawerProps) {
   if (!mode) return null;
+
+  const title =
+    mode === "tool" ? "工具调用详情" : mode === "settings" ? "设置" : "Token 用量（开发者）";
 
   return (
     <div className="drawer">
       <div className="drawer__head">
-        <strong>{mode === "tool" ? "工具调用详情" : "设置"}</strong>
+        <strong>{title}</strong>
         <button className="icon-btn" onClick={onClose} title="关闭">
           <IconClose size={15} />
         </button>
@@ -29,6 +41,7 @@ export function Drawer({ mode, tool, health, onClose, onSaveSettings }: DrawerPr
         {mode === "settings" && (
           <SettingsForm health={health} onSaveSettings={onSaveSettings} />
         )}
+        {mode === "usage" && <UsagePanel sessionId={sessionId} />}
       </div>
     </div>
   );
@@ -68,6 +81,149 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
       <pre className={`detail__pre${tool.isError ? " detail__pre--error" : ""}`}>
         {tool.state === "running" ? "等待结果…" : tool.result || "（无输出）"}
       </pre>
+    </div>
+  );
+}
+
+/** 价格表：每百万 token 的人民币单价。以模型官网为准，换了模型记得改这里。
+ *  hit 是缓存命中部分的输入价，miss 是未命中部分——两者通常差一个数量级。
+ *  key 不带 litellm 的 "openai/" 前缀，匹配时统一剥掉。 */
+const PRICE_PER_M: Record<string, { hit: number; miss: number; out: number }> = {
+  "deepseek-chat": { hit: 0.2, miss: 2, out: 3 },
+  "deepseek-reasoner": { hit: 0.2, miss: 2, out: 8 },
+  "deepseek-v4-flash": { hit: 0.2, miss: 2, out: 3 },
+};
+
+function estimateCost(call: UsageCall): number | null {
+  const short = call.model.split("/").pop() ?? call.model;
+  const price = PRICE_PER_M[short];
+  if (!price) return null;
+  return (
+    (call.cache_hit_tokens / 1e6) * price.hit +
+    (call.cache_miss_tokens / 1e6) * price.miss +
+    (call.completion_tokens / 1e6) * price.out
+  );
+}
+
+function fmtTokens(n: number): string {
+  return n >= 10000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+/**
+ * 用量面板：总账卡片 + 每次调用的流水表。
+ * sessionId 为 null 时看全部会话（全局视角）。
+ */
+function UsagePanel({ sessionId }: { sessionId: string | null }) {
+  const [summary, setSummary] = useState<UsageSummary | null>(null);
+  const [calls, setCalls] = useState<UsageCall[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [scope, setScope] = useState<"session" | "all">("session");
+
+  useEffect(() => {
+    const target = scope === "session" ? sessionId : null;
+    fetchUsage(target)
+      .then((body) => {
+        setSummary(body.summary);
+        setCalls(body.calls);
+        setError(null);
+      })
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, [sessionId, scope]);
+
+  if (error) return <p className="settings__msg settings__msg--err">{error}</p>;
+  if (!summary) return <p className="settings__note">加载中…</p>;
+
+  const hitPct = Math.round(summary.cache_hit_rate * 1000) / 10;
+
+  return (
+    <div className="usage">
+      <div className="usage__scope">
+        <button
+          className={`chip-btn${scope === "session" ? " chip-btn--on" : ""}`}
+          disabled={!sessionId}
+          onClick={() => setScope("session")}
+        >
+          当前会话
+        </button>
+        <button
+          className={`chip-btn${scope === "all" ? " chip-btn--on" : ""}`}
+          onClick={() => setScope("all")}
+        >
+          全部会话
+        </button>
+      </div>
+
+      <div className="usage__cards">
+        <div className="usage__card">
+          <span className="usage__num">{summary.calls}</span>
+          <span className="usage__label">模型调用次数</span>
+        </div>
+        <div className="usage__card">
+          <span className="usage__num">{fmtTokens(summary.total_tokens)}</span>
+          <span className="usage__label">总 tokens</span>
+        </div>
+        <div className="usage__card">
+          <span className={`usage__num${hitPct < 50 ? " usage__num--warn" : ""}`}>
+            {summary.calls ? `${hitPct}%` : "—"}
+          </span>
+          <span className="usage__label">缓存命中率</span>
+        </div>
+        <div className="usage__card">
+          <span className="usage__num">
+            {summary.avg_first_token_ms
+              ? `${(summary.avg_first_token_ms / 1000).toFixed(1)}s`
+              : "—"}
+          </span>
+          <span className="usage__label">平均首字延迟</span>
+        </div>
+      </div>
+
+      {hitPct < 50 && summary.calls > 0 && (
+        <p className="settings__msg">
+          命中率低于 50%：检查系统提示里是否有每次都变的内容（时间戳、随机数），
+          它们会把缓存前缀打断，让每次请求都按全价计费。
+        </p>
+      )}
+
+      {calls.length === 0 ? (
+        <p className="settings__note">还没有调用记录。发一轮对话后再来看。</p>
+      ) : (
+        <table className="usage__table">
+          <thead>
+            <tr>
+              <th>轮</th>
+              <th>prompt</th>
+              <th>命中</th>
+              <th>未命中</th>
+              <th>输出</th>
+              <th>耗时</th>
+              <th>约 ¥</th>
+            </tr>
+          </thead>
+          <tbody>
+            {calls.map((call) => {
+              const cost = estimateCost(call);
+              return (
+                <tr key={call.id}>
+                  <td>{call.round_no}</td>
+                  <td>{fmtTokens(call.prompt_tokens)}</td>
+                  <td className="usage__hit">{fmtTokens(call.cache_hit_tokens)}</td>
+                  <td>{fmtTokens(call.cache_miss_tokens)}</td>
+                  <td>{fmtTokens(call.completion_tokens)}</td>
+                  <td>{(call.duration_ms / 1000).toFixed(1)}s</td>
+                  <td>{cost === null ? "—" : cost.toFixed(4)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      <p className="settings__note">
+        「命中」是缓存前缀复用的部分（约 1/10 计价），「未命中」按全价。
+        价格表写在前端 PRICE_PER_M，以模型官网为准。
+        每轮上下文构成（system/history/tool_results）按字符数记录，token 是近似值。
+      </p>
     </div>
   );
 }

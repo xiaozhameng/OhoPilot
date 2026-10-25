@@ -106,6 +106,22 @@ class Runtime:
         async for event in self.agent.run(question, history):
             if event.type == "text":
                 answer.append(event.data["delta"])
+            elif event.type == "usage":
+                # agent 不知道会话号，落库只能在这里做。存一份"每次模型调用"
+                # 的流水，开发者面板的图表全靠它；agent 主循环保持零存储依赖。
+                self.store.record_llm_call(
+                    session_id,
+                    round_no=event.data.get("round_no", 0),
+                    model=self.cfg.model,
+                    prompt_tokens=event.data.get("prompt_tokens", 0),
+                    cache_hit_tokens=event.data.get("cache_hit_tokens", 0),
+                    cache_miss_tokens=event.data.get("cache_miss_tokens", 0),
+                    completion_tokens=event.data.get("completion_tokens", 0),
+                    total_tokens=event.data.get("total_tokens", 0),
+                    duration_ms=event.data.get("duration_ms", 0),
+                    first_token_ms=event.data.get("first_token_ms", 0),
+                    context=event.data.get("context"),
+                )
             elif event.type == "done":
                 # agent 不知道自己在哪个会话里，done 统一由 Runtime 发
                 continue

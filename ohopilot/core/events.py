@@ -44,15 +44,38 @@ def approval_request(call_id: str, name: str, arguments: dict[str, Any], reason:
         {"id": call_id, "name": name, "arguments": arguments, "reason": reason},
     )
 
-def usage(prompt_tokens: int, completion_tokens: int, total: int) -> Event:
-    return Event(
-        "usage",
-        {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total,
-        }
-    )
+def usage(
+    prompt_tokens: int,
+    completion_tokens: int,
+    total: int,
+    round_no: int = 0,
+    cache_hit_tokens: int = 0,
+    cache_miss_tokens: int = 0,
+    duration_ms: int = 0,
+    first_token_ms: int = 0,
+    context: dict[str, int] | None = None,
+) -> Event:
+    """一轮模型调用的用量。
+
+    round_no 从 1 起：一次问答里第几次调模型。带轮次号，界面才能画出
+    「每轮各花多少」的柱状图，而不是只有一个总数。
+    context 是发出这次请求时各类内容占的字符数（system / history /
+    question / tool_results）——token 数模型只给总数，"花在哪"只能靠
+    字符数占比近似归因，但足够定位"是大模型话多还是工具结果太肥"。
+    """
+    data: dict[str, Any] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total,
+        "round_no": round_no,
+        "cache_hit_tokens": cache_hit_tokens,
+        "cache_miss_tokens": cache_miss_tokens,
+        "duration_ms": duration_ms,
+        "first_token_ms": first_token_ms,
+    }
+    if context is not None:
+        data["context"] = context
+    return Event("usage", data)
 
 def error(message: str) -> Event:
     return Event("error", {"message": message})

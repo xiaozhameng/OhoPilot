@@ -99,6 +99,14 @@ export function IconMenu({ size = 16, className }: IconProps) {
   );
 }
 
+export function IconChart({ size = 15, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className} aria-hidden="true">
+      <path d="M4 20V10M10 20V4M16 20v-8M21 20H3" />
+    </svg>
+  );
+}
+
 /** 品牌标：一个开口的圆环 + 一个点，对应「哦豁」那种语气。 */
 export function Logo({ size = 26 }: IconProps) {
   return (

@@ -7,7 +7,14 @@
  * 一个事件 = 若干行 `data: xxx`，以空行（\n\n）结束。
  */
 
-import type { Health, HistoryMessage, RawEvent, SessionSummary } from "./types";
+import type {
+  Health,
+  HistoryMessage,
+  RawEvent,
+  SessionSummary,
+  UsageCall,
+  UsageSummary,
+} from "./types";
 
 /** 开发时 vite proxy 会把 /chat 转到 8737；生产时同源，所以一律用相对路径。 */
 const BASE = "";
@@ -65,6 +72,15 @@ export async function saveSettings(input: {
   });
   if (!resp.ok) throw new Error(await readError(resp));
   return (await resp.json()) as Health;
+}
+
+export async function fetchUsage(
+  sessionId: string | null,
+): Promise<{ summary: UsageSummary; calls: UsageCall[] }> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  const resp = await fetch(`${BASE}/usage${query}`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as { summary: UsageSummary; calls: UsageCall[] };
 }
 
 export interface AskOptions {

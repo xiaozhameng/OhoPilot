@@ -43,6 +43,33 @@ class SessionStore:
             )
             """
         )
+        # 每次模型调用一行。和 messages 一样是只追加的事实日志：
+        # 优化 prompt、换模型、调工具裁剪之后，回头对比这张表就知道有没有效。
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS llm_calls (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id         TEXT NOT NULL,
+                created_at         TEXT NOT NULL,
+                round_no           INTEGER NOT NULL DEFAULT 0,
+                model              TEXT NOT NULL DEFAULT '',
+                prompt_tokens      INTEGER NOT NULL DEFAULT 0,
+                cache_hit_tokens   INTEGER NOT NULL DEFAULT 0,
+                cache_miss_tokens  INTEGER NOT NULL DEFAULT 0,
+                completion_tokens  INTEGER NOT NULL DEFAULT 0,
+                total_tokens       INTEGER NOT NULL DEFAULT 0,
+                duration_ms        INTEGER NOT NULL DEFAULT 0,
+                first_token_ms     INTEGER NOT NULL DEFAULT 0,
+                ctx_system         INTEGER NOT NULL DEFAULT 0,
+                ctx_history        INTEGER NOT NULL DEFAULT 0,
+                ctx_question       INTEGER NOT NULL DEFAULT 0,
+                ctx_tool_results   INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls (session_id)"
+        )
         self._conn.commit()
 
     def create_session(self) -> str:
@@ -120,6 +147,101 @@ class SessionStore:
             (session_id, after_id, limit),
         ).fetchall()
         return [(int(r[0]), r[1], r[2]) for r in rows]
+
+    # ---- 用量：给开发者面板用（runtime.py 在每轮 usage 事件时调用） ----
+
+    def record_llm_call(
+        self,
+        session_id: str,
+        *,
+        round_no: int,
+        model: str,
+        prompt_tokens: int,
+        cache_hit_tokens: int,
+        cache_miss_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        duration_ms: int,
+        first_token_ms: int,
+        context: dict[str, int] | None = None,
+    ) -> None:
+        """记录一次模型调用。context 是各类内容的字符数，缺了就记 0。"""
+        ctx = context or {}
+        self._conn.execute(
+            """
+            INSERT INTO llm_calls (
+                session_id, created_at, round_no, model,
+                prompt_tokens, cache_hit_tokens, cache_miss_tokens,
+                completion_tokens, total_tokens, duration_ms, first_token_ms,
+                ctx_system, ctx_history, ctx_question, ctx_tool_results
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                datetime.now().isoformat(timespec="seconds"),
+                round_no,
+                model,
+                prompt_tokens,
+                cache_hit_tokens,
+                cache_miss_tokens,
+                completion_tokens,
+                total_tokens,
+                duration_ms,
+                first_token_ms,
+                ctx.get("system", 0),
+                ctx.get("history", 0),
+                ctx.get("question", 0),
+                ctx.get("tool_results", 0),
+            ),
+        )
+        self._conn.commit()
+
+    def llm_calls(self, session_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        """用量明细，最新在前。session_id 不传就看全部会话（全局视角）。"""
+        if session_id:
+            rows = self._conn.execute(
+                "SELECT * FROM llm_calls WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM llm_calls ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        cols = [c[0] for c in self._conn.execute("SELECT * FROM llm_calls LIMIT 0").description]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def usage_summary(self, session_id: str | None = None) -> dict[str, Any]:
+        """聚合一份总账：调用次数、各类 token 总量、缓存命中率、平均首字延迟。"""
+        where = "WHERE session_id = ?" if session_id else ""
+        params: tuple[Any, ...] = (session_id,) if session_id else ()
+        row = self._conn.execute(
+            """
+            SELECT COUNT(*),
+                   COALESCE(SUM(prompt_tokens), 0),
+                   COALESCE(SUM(cache_hit_tokens), 0),
+                   COALESCE(SUM(cache_miss_tokens), 0),
+                   COALESCE(SUM(completion_tokens), 0),
+                   COALESCE(SUM(total_tokens), 0),
+                   COALESCE(AVG(NULLIF(first_token_ms, 0)), 0),
+                   COALESCE(SUM(duration_ms), 0)
+            FROM llm_calls
+            """ + where,
+            params,
+        ).fetchone()
+        calls, prompt, hit, miss, completion, total, avg_first, duration = row
+        cacheable = int(hit) + int(miss)
+        return {
+            "calls": int(calls),
+            "prompt_tokens": int(prompt),
+            "cache_hit_tokens": int(hit),
+            "cache_miss_tokens": int(miss),
+            "completion_tokens": int(completion),
+            "total_tokens": int(total),
+            # 命中率只算"可缓存的部分"，completion 不掺进来
+            "cache_hit_rate": round(int(hit) / cacheable, 4) if cacheable else 0.0,
+            "avg_first_token_ms": round(float(avg_first)),
+            "total_duration_ms": int(duration),
+        }
 
     def recent_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
         """最近的会话列表：会话号 / 最后一条消息时间 / 消息条数 / 首句。

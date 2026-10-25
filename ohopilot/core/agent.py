@@ -55,6 +55,47 @@ def _system_prompt(cfg: Config, tool_names: list[str]) -> str:
     )
     return "\n".join(parts)
 
+def _context_breakdown(messages: list[dict[str, Any]]) -> dict[str, int]:
+    """统计这次请求里各类内容各占多少字符，给用量事件做"花在哪"的归因。
+
+    模型只回报 prompt 总 token 数，不细说构成；字符数占比是能拿到的最好近似。
+    最后一条 user 是本轮问题，其余 user（包括摘要）都算历史。
+    """
+    counts = {"system": 0, "history": 0, "question": 0, "tool_results": 0}
+    last_index = len(messages) - 1
+    for i, msg in enumerate(messages):
+        size = len(msg.get("content") or "")
+        role = msg.get("role")
+        if role == "system":
+            counts["system"] += size
+        elif role == "tool":
+            counts["tool_results"] += size
+        elif role == "user" and i == last_index:
+            counts["question"] += size
+        else:
+            counts["history"] += size
+    return counts
+
+
+def _usage_event(turn: AssistantTurn, round_no: int, ctx: dict[str, int]) -> ev.Event:
+    """把一次模型调用的完整用量打包成 usage 事件。
+
+    这里是"用量"这个概念的单一出口：cli / server / 将来的开发者面板
+    都从这一个事件拿数据，不用各自再去找模型层要。
+    """
+    return ev.usage(
+        turn.prompt_tokens,
+        turn.completion_tokens,
+        turn.total_tokens,
+        round_no=round_no,
+        cache_hit_tokens=turn.cache_hit_tokens,
+        cache_miss_tokens=turn.cache_miss_tokens,
+        duration_ms=turn.duration_ms,
+        first_token_ms=turn.first_token_ms,
+        context=ctx,
+    )
+
+
 class Agent:
     def __init__(
         self,
@@ -80,6 +121,9 @@ class Agent:
 
         for _round in range(self.cfg.max_tool_rounds):
             turn: AssistantTurn | None = None
+            # 发请求之前先量一次上下文构成——这之后 messages 还会追加
+            # assistant/tool 消息，但那些不属于"这次请求花了多少"
+            ctx = _context_breakdown(messages)
             try:
                 async for kind, payload in stream_chat(self.cfg, messages, self.registry.schemas()):
                     if kind == "text":
@@ -107,7 +151,7 @@ class Agent:
             messages.append(assistant_msg)
 
             if not turn.tool_calls:
-                yield ev.usage(turn.prompt_tokens, turn.completion_tokens, turn.total_tokens)
+                yield _usage_event(turn, _round + 1, ctx)
                 yield ev.done("")
                 return
 
@@ -122,7 +166,7 @@ class Agent:
                          "content": event.data["content"]}
                     )
 
-            yield ev.usage(turn.prompt_tokens, turn.completion_tokens, turn.total_tokens)
+            yield _usage_event(turn, _round + 1, ctx)
 
         # 轮次用尽还没结束 → 防死循环烧钱
         yield ev.error(f"已达工具调用轮次上限（{self.cfg.max_tool_rounds}），强制停止")

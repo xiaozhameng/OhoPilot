@@ -148,3 +148,53 @@ def test_重复打开同一个库不会清空数据(cfg):
     second = SessionStore(cfg.db_path)
     assert [m["content"] for m in second.load_history("s1")] == ["留下的"]
     second.close()
+
+
+# ---------- 用量流水（llm_calls，第 18 步） ----------
+
+def _record(store, session_id: str, round_no: int, prompt: int, hit: int) -> None:
+    store.record_llm_call(
+        session_id,
+        round_no=round_no,
+        model="test-model",
+        prompt_tokens=prompt,
+        cache_hit_tokens=hit,
+        cache_miss_tokens=prompt - hit,
+        completion_tokens=100,
+        total_tokens=prompt + 100,
+        duration_ms=1200,
+        first_token_ms=300,
+        context={"system": 500, "history": 300, "question": 10, "tool_results": 2000},
+    )
+
+
+def test_用量流水按会话记录与查询(store):
+    _record(store, "s1", 1, 2400, 2300)
+    _record(store, "s1", 2, 5500, 2300)
+    _record(store, "s2", 1, 999, 0)
+
+    rows = store.llm_calls("s1")
+    assert [r["round_no"] for r in rows] == [2, 1]  # 最新在前
+    assert rows[0]["ctx_tool_results"] == 2000
+    assert len(store.llm_calls("s2")) == 1
+    assert len(store.llm_calls()) == 3              # 不带会话号 = 全局视角
+
+
+def test_用量总账_含缓存命中率(store):
+    _record(store, "s1", 1, 2400, 2300)
+    _record(store, "s1", 2, 5500, 2300)
+
+    s = store.usage_summary("s1")
+    assert s["calls"] == 2
+    assert s["prompt_tokens"] == 7900
+    assert s["cache_hit_tokens"] == 4600
+    assert s["cache_miss_tokens"] == 3300
+    # 命中率只看可缓存部分，completion 不掺进来
+    assert s["cache_hit_rate"] == round(4600 / 7900, 4)
+    assert s["avg_first_token_ms"] == 300
+
+
+def test_空库的用量总账不炸_命中率为零(store):
+    s = store.usage_summary("不存在")
+    assert s["calls"] == 0
+    assert s["cache_hit_rate"] == 0.0

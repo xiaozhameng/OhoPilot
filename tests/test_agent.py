@@ -279,3 +279,30 @@ def test_技能只注入目录不注入正文(cfg):
 @pytest.mark.parametrize("rule", ["memory_append", "skill_load"])
 def test_系统提示里点明了记忆与技能的用法(cfg, rule):
     assert rule in _system_prompt(cfg, [])
+
+
+# ---------- 用量事件（第 18 步：token 可观测） ----------
+
+async def test_每轮_usage_带轮次号与上下文构成(cfg, monkeypatch):
+    """面板要画"每轮花多少、花在哪"，所以轮次号和构成必须在事件里。"""
+    call = ToolCall(id="c1", name="echo", arguments={"text": "hi"}, raw_arguments='{"text":"hi"}')
+    scripted(monkeypatch, [("", [call]), ("收到", [])])
+    agent = Agent(cfg, ToolRegistry([EchoTool()]))
+
+    events = await _collect(agent, "帮我看看")
+    usages = [e for e in events if e.type == "usage"]
+
+    assert [u.data["round_no"] for u in usages] == [1, 2]
+
+    # 第 1 轮发请求时：有系统提示和问题，工具结果还没出现
+    r1 = usages[0].data["context"]
+    assert r1["system"] > 0
+    assert r1["question"] == len("帮我看看")
+    assert r1["tool_results"] == 0
+
+    # 第 2 轮发请求时：上一轮的工具结果进了上下文；
+    # 问题不再是最后一条 user，按约定计入历史
+    r2 = usages[1].data["context"]
+    assert r2["tool_results"] == len("echo:hi")
+    assert r2["question"] == 0
+    assert r2["history"] > 0

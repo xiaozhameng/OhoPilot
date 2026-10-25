@@ -141,6 +141,19 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=f"会话不存在或为空：{session_id}")
         return {"session_id": session_id, "messages": history}
 
+    @app.get("/usage")
+    async def usage(
+        request: Request,
+        session_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """用量流水 + 总账。session_id 不传就是全部会话的全局视角。"""
+        rt: Runtime = request.app.state.rt
+        return {
+            "summary": rt.store.usage_summary(session_id),
+            "calls": rt.store.llm_calls(session_id, limit=limit),
+        }
+
     @app.post("/chat")
     async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
         rt: Runtime = request.app.state.rt

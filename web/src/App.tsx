@@ -45,7 +45,8 @@ export default function App() {
       );
 
     // ?session=xxx 深链：刷新页面不掉上下文，链接也能直接发给别人（本机范围内）
-    const deepLink = new URLSearchParams(window.location.search).get("session");
+    const params = new URLSearchParams(window.location.search);
+    const deepLink = params.get("session");
     if (deepLink) {
       fetchSessionMessages(deepLink)
         .then((rows) =>
@@ -53,6 +54,8 @@ export default function App() {
         )
         .catch(() => undefined);
     }
+    // ?usage=1 直接打开用量面板：面板也可以被分享/收藏
+    if (params.get("usage")) setDrawer("usage");
 
     void refreshSessions();
   }, [refreshSessions]);
@@ -156,6 +159,7 @@ export default function App() {
           health={health}
           title={rawTitle.length > 40 ? `${rawTitle.slice(0, 40)}…` : rawTitle}
           onOpenSettings={() => setDrawer("settings")}
+          onOpenUsage={() => setDrawer("usage")}
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
         />
 
@@ -207,6 +211,7 @@ export default function App() {
         mode={drawer}
         tool={activeTool}
         health={health}
+        sessionId={state.sessionId}
         onClose={() => setDrawer(null)}
         onSaveSettings={onSaveSettings}
       />

@@ -1192,3 +1192,91 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---------- 用量面板（开发者） ---------- */
+.usage__scope {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chip-btn {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-2);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chip-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.chip-btn--on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.usage__cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.usage__card {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.usage__num {
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.usage__num--warn {
+  color: var(--warn);
+}
+
+.usage__label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.usage__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+.usage__table th {
+  text-align: left;
+  font-family: var(--sans);
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 6px;
+}
+
+.usage__table td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 6px;
+  color: var(--text-2);
+}
+
+.usage__hit {
+  color: var(--ok);
+}
