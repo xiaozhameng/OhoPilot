@@ -77,6 +77,13 @@ class Config:
     # 服务端不能像终端那样无限等，否则一次请求会永久挂着
     approval_timeout: int = 180
 
+    # 网页搜索：后端三选一 searxng（自建，免费，默认）/ tavily（免费额度）/ bocha（付费）
+    # 端点全部来自配置，模型只控制 query——「去哪查」它说了不算
+    search_provider: str = "searxng"
+    searxng_base_url: str = "http://127.0.0.1:8080"
+    tavily_api_key: str = ""
+    bocha_api_key: str = ""
+
     # 由home 派生出来的路径，不单独存储
     @property
     def skills_dir(self) -> Path:
@@ -120,4 +127,8 @@ class Config:
             host=_get("HOST", "127.0.0.1"),
             port=_get_int("PORT", 8737),
             approval_timeout=_get_int("APPROVAL_TIMEOUT", 180),
+            search_provider=_get("SEARCH_PROVIDER", "searxng").lower(),
+            searxng_base_url=_get("SEARXNG_BASE_URL", "http://127.0.0.1:8080").rstrip("/"),
+            tavily_api_key=_get("TAVILY_API_KEY"),
+            bocha_api_key=_get("BOCHA_API_KEY"),
         )

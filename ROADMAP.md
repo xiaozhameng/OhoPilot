@@ -44,7 +44,7 @@ OhoPilot = 桌面优先的**办公助手**：
 
 ## 阶段三：办公助手雏形（当前阶段）
 
-- [ ] **19. web_search 工具**（搜索：让 agent 能查公开信息）
+- [x] **19. web_search 工具**（搜索：让 agent 能查公开信息）
   - 一个 `web_search` 工具，三个 provider 后端可切换（`OHOPILOT_SEARCH_PROVIDER`）：
     `searxng`（自建 Docker，免费，默认）｜`tavily`（免费 1000 次/月，需代理）｜`bocha`（付费 ≈0.03 元/次，中文最佳）
   - 结果截断进上下文（标题+摘要+链接，≤N 条），防撑爆

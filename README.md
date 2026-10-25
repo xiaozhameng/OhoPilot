@@ -187,6 +187,7 @@ npm run dev
 | `fs_search` | 文件名 + 内容搜索，剪掉噪声目录 | 否 |
 | `shell_run` | 执行 shell 命令 | 三档 |
 | `web_fetch` | 抓网页转纯文本（挡 SSRF） | 否 |
+| `web_search` | 关键词搜网页，返回标题+链接+摘要（后端可切） | 否 |
 | `memory_append` | 往长期记忆追加一条 | 是 |
 | `skill_load` | 取某个技能的正文 | 否 |
 
@@ -266,6 +267,34 @@ ohopilot/
 | `OHOPILOT_SUMMARY_KEEP` | `8` | 压缩后始终保留原文的最近条数 |
 | `OHOPILOT_HOST` / `OHOPILOT_PORT` | `127.0.0.1` / `8737` | 服务端监听地址 |
 | `OHOPILOT_APPROVAL_TIMEOUT` | `180` | HTTP 审批等待上限，超时按拒绝 |
+| `OHOPILOT_SEARCH_PROVIDER` | `searxng` | 网页搜索后端：`searxng` / `tavily` / `bocha` |
+| `OHOPILOT_SEARXNG_BASE_URL` | `http://127.0.0.1:8080` | 自建 SearXNG 地址 |
+| `OHOPILOT_TAVILY_API_KEY` | 空 | provider 为 tavily 时必填 |
+| `OHOPILOT_BOCHA_API_KEY` | 空 | provider 为 bocha 时必填 |
+
+## 网页搜索：技术选型
+
+`web_search` 的后端可切换（改 `OHOPILOT_SEARCH_PROVIDER`），三家对比：
+
+| 后端 | 费用 | 中文效果 | 访问 | 适合 |
+|---|---|---|---|---|
+| **searxng**（默认） | 完全免费（自建） | 中等，取决于聚合的引擎 | 本机直连 | 日常默认，零成本无限量 |
+| **tavily** | 免费 1000 次/月，之后付费 | 中上 | 国内常需代理 | Agent 生态标配，结果结构化好 |
+| **bocha** | ≈0.03 元/次 | 最好 | 国内直连 | 要高质量中文结果时 |
+
+**SearXNG 自建**（默认后端）两步：
+
+```bash
+docker run -d --name searxng -p 8080:8080 searxng/searxng
+docker exec searxng sh -c \
+  "sed -i 's/formats: - html/formats: - html\n    - json/' /etc/searxng/settings.yml && docker restart searxng"
+```
+
+- 第一行：起服务，映射到本机 8080
+- 第二行：SearXNG **默认关闭 JSON 输出**（反爬措施），而我们的工具走 `format=json`，必须打开；改完重启生效
+- 验证：`curl --noproxy '*' 'http://127.0.0.1:8080/search?q=test&format=json'` 返回 JSON 即成功
+
+安全设计：搜索端点全部来自配置，模型只能控制关键词——「去哪查」它说了不算，所以不像 `web_fetch` 那样需要 SSRF 防护。本机 searxng 请求固定绕过系统代理（`trust_env=False`），公网 API 保留代理。
 
 ## 写一个技能
 
