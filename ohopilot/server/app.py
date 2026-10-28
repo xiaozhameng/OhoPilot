@@ -31,8 +31,12 @@ from pydantic import BaseModel, Field
 from ohopilot.config import Config
 from ohopilot.core import events as ev
 from ohopilot.core.llm import has_credentials
+from ohopilot.mcp.client import load_mcp_config
 from ohopilot.runtime import Runtime
 from ohopilot.server.approvals import ApprovalBroker
+from ohopilot.skills.discovery import discover_repo_skills
+from ohopilot.skills.installer import install_skill
+from ohopilot.skills.loader import load_skills
 
 #: 前端构建产物（web/ 里 npm run build 会输出到这里）
 STATIC_DIR = Path(__file__).parent / "static"
@@ -76,6 +80,27 @@ class SettingsBody(BaseModel):
 
     model: str | None = Field(default=None, description="模型名，如 deepseek-v4-flash")
     workspace: str | None = Field(default=None, description="工作目录，必须是已存在的绝对路径")
+
+
+class SkillInstallBody(BaseModel):
+    """安装来源两种：http(s) 直链 / 本地路径。仓库发现出来的 raw_url 也走直链。"""
+
+    source: str = Field(min_length=1)
+    confirm_risky: bool = Field(default=False, description="审计有 warning 时需显式确认")
+    replace: bool = Field(default=False, description="同名技能已存在时是否覆盖")
+
+
+class SkillDiscoverBody(BaseModel):
+    repo: str = Field(min_length=1, description="owner/repo 或 GitHub 仓库地址")
+
+
+class McpServerBody(BaseModel):
+    """Claude Desktop 同格式：command + args + env。名称归一化成合法标识符。"""
+
+    name: str = Field(min_length=1)
+    command: str = Field(min_length=1)
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
 
 
 def _health(rt: Runtime, broker: ApprovalBroker) -> dict[str, Any]:
@@ -216,9 +241,142 @@ def create_app() -> FastAPI:
 
     @app.get("/console/overview")
     async def console_overview(request: Request) -> dict[str, Any]:
-        """跨会话聚合：token 总账 / 按模型拆分 / 工具排行 / 每会话成本。"""
+        """跨会话聚合：token 总账 / 按模型拆分 / 工具排行 / 每会话成本 / 趋势 / 失败样本。"""
         rt: Runtime = request.app.state.rt
         return rt.store.console_overview()
+
+    @app.get("/console/sessions/{session_id}")
+    async def console_session(session_id: str, request: Request) -> dict[str, Any]:
+        """控制台点开单个会话的下钻明细：逐轮模型调用 + 逐次工具调用。"""
+        rt: Runtime = request.app.state.rt
+        return rt.store.session_detail(session_id)
+
+    # ---- 扩展中心（使用者视角）：技能 + MCP 的可视化管理 ----
+    # 和 /console/*（开发者看数据）分开：这里改的是「agent 能干什么」的配置。
+    # 复用第 24 步的 install_skill 管道，UI 只是换了入口，审计规则一套不差。
+
+    @app.get("/skills")
+    async def list_skills(request: Request) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        skills = load_skills(rt.cfg)
+        return {
+            "dir": str(rt.cfg.skills_dir),
+            "skills": [
+                {"name": s.name, "description": s.description, "file": s.path.name}
+                for s in skills
+            ],
+        }
+
+    @app.post("/skills/discover")
+    async def discover_skills(body: SkillDiscoverBody) -> dict[str, Any]:
+        try:
+            candidates = discover_repo_skills(body.repo)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 —— 网络/限流/仓库不存在都给可读信息
+            raise HTTPException(status_code=502, detail=f"GitHub 请求失败：{exc}") from exc
+        return {"repo": body.repo, "candidates": candidates}
+
+    @app.post("/skills/install")
+    async def install_skill_endpoint(body: SkillInstallBody, request: Request) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        path, findings, message = install_skill(
+            body.source,
+            rt.cfg,
+            confirm_risky=body.confirm_risky,
+            replace=body.replace,
+        )
+        # findings 原样给前端：审计报告要在页面上看得见，不能只给一句结论
+        return {
+            "ok": path is not None,
+            "message": message,
+            "findings": [
+                {
+                    "severity": f.severity,
+                    "label": f.label,
+                    "line_no": f.line_no,
+                    "excerpt": f.excerpt,
+                }
+                for f in findings
+            ],
+        }
+
+    @app.delete("/skills/{name}")
+    async def delete_skill(name: str, request: Request) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        # 名字白名单校验：防 ../ 之类的路径穿越，技能名本来就是标识符
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+            raise HTTPException(status_code=422, detail="技能名不合法")
+        target = rt.cfg.skills_dir / f"{name}.md"
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail=f"技能不存在：{name}")
+        target.unlink()
+        return {"deleted": name}
+
+    @app.get("/mcp")
+    async def get_mcp(request: Request) -> dict[str, Any]:
+        """返回 mcp.json 的原始内容（Claude Desktop 同格式）+ 文件路径。"""
+        rt: Runtime = request.app.state.rt
+        mcp_path = rt.cfg.home / "mcp.json"
+        if mcp_path.exists():
+            try:
+                data = json.loads(mcp_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"mcp.json 解析失败，请手工检查：{exc}"
+                ) from exc
+        else:
+            data = {}
+        return {"path": str(mcp_path), "servers": data.get("mcpServers") or {}}
+
+    @app.post("/mcp/servers")
+    async def add_mcp_server(body: McpServerBody, request: Request) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        mcp_path = rt.cfg.home / "mcp.json"
+        data: dict[str, Any] = {}
+        if mcp_path.exists():
+            try:
+                data = json.loads(mcp_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"mcp.json 解析失败，请先手工修复：{exc}"
+                ) from exc
+        servers: dict[str, Any] = data.setdefault("mcpServers", {})
+        # 名称归一化：和工具名同一套规则，mcp__<服务器>__<工具> 拼出来才合法
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "-", body.name).strip("-")
+        if not safe_name:
+            raise HTTPException(status_code=422, detail="服务器名不合法")
+        servers[safe_name] = {
+            "command": body.command,
+            "args": body.args,
+            "env": body.env,
+        }
+        mcp_path.parent.mkdir(parents=True, exist_ok=True)
+        mcp_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        return {
+            "added": safe_name,
+            "path": str(mcp_path),
+            # MCP 子进程是启动时拉起来的，改配置不影响已运行的服务器
+            "note": "已写入 mcp.json，重启 oho-server 后生效",
+        }
+
+    @app.delete("/mcp/servers/{name}")
+    async def delete_mcp_server(name: str, request: Request) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        mcp_path = rt.cfg.home / "mcp.json"
+        if not mcp_path.exists():
+            raise HTTPException(status_code=404, detail="还没有 mcp.json")
+        data = json.loads(mcp_path.read_text(encoding="utf-8"))
+        servers: dict[str, Any] = data.get("mcpServers") or {}
+        if name not in servers:
+            raise HTTPException(status_code=404, detail=f"没有这个 MCP 服务器：{name}")
+        del servers[name]
+        mcp_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        return {"deleted": name, "note": "已写入 mcp.json，重启 oho-server 后生效"}
 
     @app.post("/chat")
     async def chat(body: ChatRequest, request: Request) -> StreamingResponse:
@@ -281,10 +439,15 @@ def create_app() -> FastAPI:
         async def index() -> FileResponse:
             return FileResponse(STATIC_DIR / "index.html")
 
-        # /console 是同一个 SPA 的第二个入口：前端按 pathname 渲染控制台页。
-        # 返回同一个 index.html，静态资源仍然只从 /assets 拿
+        # /console 和 /extensions 是同一个 SPA 的第二、三个入口：
+        # 前端按 pathname 渲染控制台页 / 扩展中心页。返回同一个 index.html，
+        # 静态资源仍然只从 /assets 拿
         @app.get("/console", include_in_schema=False)
         async def console_index() -> FileResponse:
+            return FileResponse(STATIC_DIR / "index.html")
+
+        @app.get("/extensions", include_in_schema=False)
+        async def extensions_index() -> FileResponse:
             return FileResponse(STATIC_DIR / "index.html")
 
     else:

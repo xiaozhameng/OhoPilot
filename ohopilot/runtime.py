@@ -148,11 +148,16 @@ class Runtime:
             if event.type == "text":
                 answer.append(event.data["delta"])
             elif event.type == "tool_result":
-                # 每次工具执行都记一笔流水（第 26 步控制台的「工具调用排行」数据源）
+                # 每次工具执行都记一笔流水（第 26 步控制台的「工具调用排行」数据源）。
+                # 耗时由 agent 掐表带在事件里；错误样本从结果原文截 200 字——
+                # 控制台排障时看的就是这一段，不是光秃秃的「失败了」
+                is_err = bool(event.data.get("is_error", False))
                 self.store.record_tool_call(
                     session_id,
                     event.data.get("name", ""),
-                    bool(event.data.get("is_error", False)),
+                    is_err,
+                    duration_ms=event.data.get("duration_ms"),
+                    error_excerpt=event.data.get("content", "")[:200] if is_err else None,
                 )
                 if event.data.get("name", "").startswith("todo_"):
                     # 清单工具刚改完库，追加一条全量快照事件给界面。

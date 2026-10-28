@@ -11,8 +11,13 @@ import type {
   ConsoleOverview,
   Health,
   HistoryMessage,
+  McpServer,
   RawEvent,
+  SessionDetail,
   SessionSummary,
+  SkillCandidate,
+  SkillInfo,
+  SkillInstallResult,
   TodoItem,
   UsageCall,
   UsageSummary,
@@ -108,6 +113,89 @@ export async function fetchConsoleOverview(): Promise<ConsoleOverview> {
   const resp = await fetch(`${BASE}/console/overview`);
   if (!resp.ok) throw new Error(await readError(resp));
   return (await resp.json()) as ConsoleOverview;
+}
+
+export async function fetchConsoleSession(sessionId: string): Promise<SessionDetail> {
+  const resp = await fetch(`${BASE}/console/sessions/${encodeURIComponent(sessionId)}`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as SessionDetail;
+}
+
+// ---- 扩展中心（使用者视角）：技能 + MCP ----
+
+export async function fetchSkills(): Promise<{ dir: string; skills: SkillInfo[] }> {
+  const resp = await fetch(`${BASE}/skills`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as { dir: string; skills: SkillInfo[] };
+}
+
+/** 列出 GitHub 仓库里的技能候选（只看目录不下载内容）。 */
+export async function discoverSkills(repo: string): Promise<SkillCandidate[]> {
+  const resp = await fetch(`${BASE}/skills/discover`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo }),
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+  const body = (await resp.json()) as { candidates: SkillCandidate[] };
+  return body.candidates;
+}
+
+/**
+ * 安装一个技能。注意：审计有 warning 时后端会返回 ok=false，
+ * findings 里带着原因——前端要把它亮出来让用户勾 confirm_risky，而不是当纯报错。
+ */
+export async function installSkill(input: {
+  source: string;
+  confirm_risky?: boolean;
+  replace?: boolean;
+}): Promise<SkillInstallResult> {
+  const resp = await fetch(`${BASE}/skills/install`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source: input.source,
+      confirm_risky: input.confirm_risky ?? false,
+      replace: input.replace ?? false,
+    }),
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as SkillInstallResult;
+}
+
+export async function deleteSkill(name: string): Promise<void> {
+  const resp = await fetch(`${BASE}/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+}
+
+export async function fetchMcp(): Promise<{ path: string; servers: Record<string, McpServer> }> {
+  const resp = await fetch(`${BASE}/mcp`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as { path: string; servers: Record<string, McpServer> };
+}
+
+export async function addMcpServer(input: {
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}): Promise<{ added: string; path: string; note: string }> {
+  const resp = await fetch(`${BASE}/mcp/servers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as { added: string; path: string; note: string };
+}
+
+export async function deleteMcpServer(name: string): Promise<void> {
+  const resp = await fetch(`${BASE}/mcp/servers/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
 }
 
 export interface AskOptions {

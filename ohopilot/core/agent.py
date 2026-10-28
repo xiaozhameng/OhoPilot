@@ -4,6 +4,7 @@
 CLI / HTTP 服务端 / 将来的手机端都只消费这些事件。
 """
 from typing import Callable, Any, Awaitable, AsyncIterator
+import time
 
 from ohopilot.config import Config
 from ohopilot.core.llm import AssistantTurn, LLMError, stream_chat
@@ -184,6 +185,8 @@ class Agent:
         for tc in tool_calls:
             yield ev.tool_call(tc.id, tc.name, tc.arguments)
 
+            # 「未知工具 / 用户拒绝」两个分支没真正执行，耗时留 None
+            duration_ms: int | None = None
             tool = self.registry.get(tc.name)
             if tool is None:
                 result = ToolResult.fail(f"未知工具：{tc.name}")
@@ -196,8 +199,12 @@ class Agent:
                         allowed = await self.approver(tc.id, tc.name, tc.arguments, reason)
                     if not allowed:
                         result = ToolResult.fail("用户拒绝了该操作")
+                        # 没真正执行：不掐表，duration 保持 None
                         yield ev.tool_result(tc.id, tc.name, result.content, True)
                         continue
+                # 控制台要按工具统计耗时，掐表只能在真正执行的前后
+                _started = time.monotonic()
                 result = await tool.safe_run(tc.arguments)
+                duration_ms = int((time.monotonic() - _started) * 1000)
 
-            yield ev.tool_result(tc.id, tc.name, result.content, result.is_error)
+            yield ev.tool_result(tc.id, tc.name, result.content, result.is_error, duration_ms)

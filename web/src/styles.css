@@ -178,6 +178,230 @@ pre {
   color: var(--accent);
 }
 
+/* ---------- 控制台：14 天趋势图（第 29 步） ---------- */
+/* 纯 CSS 柱状图：flex 等分 14 列，柱高由内联 style 按占比给。
+   不引图表库——一张趋势图不值一个依赖 */
+
+.trend {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 120px;
+  padding: 8px 4px 0;
+}
+
+.trend__col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.trend__bar-wrap {
+  width: 100%;
+  height: 96px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.trend__bar {
+  width: 100%;
+  min-height: 2px;
+  background: var(--accent);
+  opacity: 0.75;
+  border-radius: 3px 3px 0 0;
+}
+
+.trend__label {
+  font-size: 9px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ---------- 控制台：失败样本列表 ---------- */
+
+.errlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.errlist__item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  background: var(--panel);
+}
+
+.errlist__meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.errlist__excerpt {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  background: var(--sidebar);
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 96px;
+  overflow: auto;
+}
+
+/* ---------- 控制台：会话下钻 ---------- */
+
+.drill {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--sidebar);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.drill__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drill__sub {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+/* ---------- 扩展中心 ---------- */
+
+.ext__tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.ext__tab {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ext__tab--on {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ext__row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+
+.ext__input {
+  flex: 1;
+  min-width: 200px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.ext__input--area {
+  width: 100%;
+  font-family: ui-monospace, monospace;
+  resize: vertical;
+}
+
+.ext__form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 560px;
+}
+
+.ext__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.ext__path {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.pill--btn {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.pill--btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- 扩展中心：审计报告 ---------- */
+
+.audit {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 13px;
+}
+
+.audit--ok {
+  border-color: #2e9e5b;
+}
+
+.audit--bad {
+  border-color: #d64545;
+}
+
+.audit__msg {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.audit__list {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+
+.audit__item--danger {
+  color: #c22f2f;
+}
+
+.audit__item--warning {
+  color: #9a6b00;
+}
+
 /* ---------- 任务清单面板 ---------- */
 /* 常驻在消息区顶部；没有清单时组件直接不渲染，这里只管有清单的样子 */
 .todo-panel {

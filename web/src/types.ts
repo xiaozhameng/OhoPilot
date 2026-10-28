@@ -52,10 +52,83 @@ export interface ConsoleOverview {
     prompt_tokens: number;
     completion_tokens: number;
   }>;
-  tool_stats: Array<{ name: string; calls: number; errors: number }>;
+  tool_stats: Array<{
+    name: string;
+    calls: number;
+    errors: number;
+    /** 平均/最大耗时（毫秒）。没有真正执行过的调用为 null */
+    avg_ms: number | null;
+    max_ms: number | null;
+  }>;
   tool_calls_total: number;
   tool_errors_total: number;
   by_session: Array<{ session_id: string; llm_calls: number; total_tokens: number }>;
+  /** 近 14 天趋势（第 29 步）：空日子也有一行，方便画图 */
+  trend: Array<{ date: string; llm_calls: number; tokens: number; tool_calls: number }>;
+  /** 最近的工具失败样本：报错原文前 200 字，控制台排障第一入口 */
+  error_samples: Array<{
+    session_id: string;
+    created_at: string;
+    name: string;
+    excerpt: string | null;
+  }>;
+}
+
+/** 控制台会话下钻：GET /console/sessions/{id} 的返回结构 */
+export interface SessionDetail {
+  session_id: string;
+  llm_calls: Array<{
+    round_no: number;
+    created_at: string;
+    model: string;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    duration_ms: number;
+    first_token_ms: number;
+  }>;
+  tool_calls: Array<{
+    created_at: string;
+    name: string;
+    is_error: boolean;
+    duration_ms: number | null;
+    error_excerpt: string | null;
+  }>;
+}
+
+/** 扩展中心：技能与 MCP（GET /skills、GET /mcp 等） */
+export interface SkillInfo {
+  name: string;
+  description: string;
+  file: string;
+}
+
+/** 一次安全审计的发现。severity: danger=拒装 / warning=需确认 */
+export interface AuditFinding {
+  severity: "danger" | "warning";
+  label: string;
+  line_no: number;
+  excerpt: string;
+}
+
+export interface SkillInstallResult {
+  ok: boolean;
+  message: string;
+  findings: AuditFinding[];
+}
+
+/** GitHub 仓库里发现的一个技能候选 */
+export interface SkillCandidate {
+  name: string;
+  path: string;
+  raw_url: string;
+}
+
+/** mcp.json 里一个 server 的原始配置（Claude Desktop 同格式） */
+export interface McpServer {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
 }
 
 /** 任务清单的一条。与后端 memory/todo.py 的 list_items() 返回一致。 */

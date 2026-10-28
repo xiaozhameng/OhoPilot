@@ -33,10 +33,24 @@ def text(delta: str) -> Event:
 def tool_call(call_id: str, name: str, arguments: dict[str, Any]) -> Event:
     return Event("tool_call", {"id": call_id, "name": name, "arguments": arguments})
 
-def tool_result(call_id: str, name: str, content: str, is_error: bool = False) -> Event:
+def tool_result(
+    call_id: str,
+    name: str,
+    content: str,
+    is_error: bool = False,
+    duration_ms: int | None = None,
+) -> Event:
+    # duration_ms 给控制台记耗时用；未知工具/用户拒绝这类"没真正执行"的
+    # 分支保持 None，统计平均耗时时不掺噪声。
     return Event(
         "tool_result",
-        {"id": call_id, "name": name, "content": content, "is_error": is_error},
+        {
+            "id": call_id,
+            "name": name,
+            "content": content,
+            "is_error": is_error,
+            "duration_ms": duration_ms,
+        },
     )
 
 def approval_request(call_id: str, name: str, arguments: dict[str, Any], reason: str) -> Event:

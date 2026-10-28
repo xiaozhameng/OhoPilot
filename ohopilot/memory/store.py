@@ -83,9 +83,22 @@ class SessionStore:
             )
             """
         )
+        self._migrate_tool_calls()
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls (session_id)"
         )
+
+    def _migrate_tool_calls(self) -> None:
+        """给老库补列：耗时 + 错误样本。探测到有就不动，幂等。
+
+        为什么不直接写进 CREATE TABLE：老用户的 db 文件已经存在，
+        IF NOT EXISTS 不会重建表，新列必须用 ALTER TABLE 补。
+        """
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tool_calls)").fetchall()}
+        if "duration_ms" not in cols:
+            self._conn.execute("ALTER TABLE tool_calls ADD COLUMN duration_ms INTEGER")
+        if "error_excerpt" not in cols:
+            self._conn.execute("ALTER TABLE tool_calls ADD COLUMN error_excerpt TEXT")
         self._conn.commit()
 
     def create_session(self) -> str:
@@ -261,15 +274,32 @@ class SessionStore:
 
     # ---- 控制台聚合（第 26 步）：只读统计，不碰业务表 ----
 
-    def record_tool_call(self, session_id: str, name: str, is_error: bool) -> None:
-        """记一次工具调用。runtime 在 tool_result 事件时调用，agent 保持零存储依赖。"""
+    def record_tool_call(
+        self,
+        session_id: str,
+        name: str,
+        is_error: bool,
+        duration_ms: int | None = None,
+        error_excerpt: str | None = None,
+    ) -> None:
+        """记一次工具调用。runtime 在 tool_result 事件时调用，agent 保持零存储依赖。
+
+        duration_ms / error_excerpt 是控制台「分析优化」的数据源：
+        光知道「失败了」没法定位问题，「超时 8 秒」和「参数不匹配」是两种病。
+        """
         self._conn.execute(
-            "INSERT INTO tool_calls (session_id, created_at, name, is_error) VALUES (?, ?, ?, ?)",
+            """
+            INSERT INTO tool_calls
+                (session_id, created_at, name, is_error, duration_ms, error_excerpt)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
             (
                 session_id,
                 datetime.now().isoformat(timespec="seconds"),
                 name,
                 int(is_error),
+                duration_ms,
+                error_excerpt,
             ),
         )
         self._conn.commit()
@@ -290,10 +320,18 @@ class SessionStore:
         ]
 
         tool_stats = [
-            {"name": r[0], "calls": r[1], "errors": r[2]}
+            {
+                "name": r[0],
+                "calls": r[1],
+                "errors": r[2],
+                # 耗时只有真正执行过的调用才有；None 行 AVG 会自动忽略
+                "avg_ms": int(r[3]) if r[3] is not None else None,
+                "max_ms": int(r[4]) if r[4] is not None else None,
+            }
             for r in self._conn.execute(
                 """
-                SELECT name, COUNT(*), COALESCE(SUM(is_error), 0)
+                SELECT name, COUNT(*), COALESCE(SUM(is_error), 0),
+                       AVG(duration_ms), MAX(duration_ms)
                 FROM tool_calls GROUP BY name ORDER BY COUNT(*) DESC LIMIT 20
                 """
             ).fetchall()
@@ -301,6 +339,60 @@ class SessionStore:
         tool_row = self._conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(is_error), 0) FROM tool_calls"
         ).fetchone()
+
+        # 近 14 天趋势：控制台从「总账」变「分析」的主视图。
+        # created_at 是 ISO 字符串（2026-10-25T22:51:26），substr 前 10 位就是日期，
+        # 比 date() 函数省一层转换，也和时区写入库时保持一致
+        trend = [
+            {"date": r[0], "llm_calls": r[1], "tokens": r[2], "tool_calls": r[3]}
+            for r in self._conn.execute(
+                """
+                SELECT d.date, COALESCE(l.n, 0), COALESCE(l.tok, 0), COALESCE(t.n, 0)
+                FROM (
+                    -- 先用两条流水表里最近的日期造出连续 14 天的骨架，空日子也占一行
+                    WITH RECURSIVE
+                    max_day AS (
+                        SELECT MAX(substr(created_at, 1, 10)) AS day FROM llm_calls
+                        UNION SELECT MAX(substr(created_at, 1, 10)) FROM tool_calls
+                    ),
+                    span(day, _) AS (
+                        SELECT day, 0 FROM max_day WHERE day IS NOT NULL
+                        UNION ALL
+                        SELECT date(day, '-1 day'), _ + 1 FROM span WHERE _ < 13
+                    )
+                    SELECT DISTINCT day AS date FROM span ORDER BY day
+                ) AS d
+                LEFT JOIN (
+                    SELECT substr(created_at, 1, 10) AS day,
+                           COUNT(*) AS n, SUM(total_tokens) AS tok
+                    FROM llm_calls GROUP BY day
+                ) AS l ON l.day = d.date
+                LEFT JOIN (
+                    SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n
+                    FROM tool_calls GROUP BY day
+                ) AS t ON t.day = d.date
+                ORDER BY d.date
+                """
+            ).fetchall()
+        ]
+
+        # 最近的失败样本：控制台排障的第一入口，直接能看到报错原文
+        error_samples = [
+            {
+                "session_id": r[0],
+                "created_at": r[1],
+                "name": r[2],
+                "excerpt": r[3],
+            }
+            for r in self._conn.execute(
+                """
+                SELECT session_id, created_at, name, error_excerpt
+                FROM tool_calls
+                WHERE is_error = 1
+                ORDER BY id DESC LIMIT 20
+                """
+            ).fetchall()
+        ]
 
         by_session = [
             {"session_id": r[0], "llm_calls": r[1], "total_tokens": r[2]}
@@ -319,7 +411,53 @@ class SessionStore:
             "tool_calls_total": int(tool_row[0]),
             "tool_errors_total": int(tool_row[1]),
             "by_session": by_session,
+            "trend": trend,
+            "error_samples": error_samples,
         }
+
+    def session_detail(self, session_id: str) -> dict[str, Any]:
+        """单个会话的下钻明细：逐轮模型调用 + 逐次工具调用。
+
+        控制台点开一个会话后看的就是它——「这个会话为什么烧了 30 万 token」
+        能对到具体哪一轮、哪次工具。工具结果不在这（没落库），要看原文去主界面。
+        """
+        llm = [
+            {
+                "round_no": r[0],
+                "created_at": r[1],
+                "model": r[2],
+                "prompt_tokens": r[3],
+                "completion_tokens": r[4],
+                "total_tokens": r[5],
+                "duration_ms": r[6],
+                "first_token_ms": r[7],
+            }
+            for r in self._conn.execute(
+                """
+                SELECT round_no, created_at, model, prompt_tokens,
+                       completion_tokens, total_tokens, duration_ms, first_token_ms
+                FROM llm_calls WHERE session_id = ? ORDER BY id
+                """,
+                (session_id,),
+            ).fetchall()
+        ]
+        tools = [
+            {
+                "created_at": r[0],
+                "name": r[1],
+                "is_error": bool(r[2]),
+                "duration_ms": r[3],
+                "error_excerpt": r[4],
+            }
+            for r in self._conn.execute(
+                """
+                SELECT created_at, name, is_error, duration_ms, error_excerpt
+                FROM tool_calls WHERE session_id = ? ORDER BY id
+                """,
+                (session_id,),
+            ).fetchall()
+        ]
+        return {"session_id": session_id, "llm_calls": llm, "tool_calls": tools}
 
     def recent_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
         """最近的会话列表：会话号 / 最后一条消息时间 / 消息条数 / 首句。
