@@ -278,7 +278,19 @@ function SpaceBlock({
   async function saveFolder() {
     const next = draft.trim();
     setMenu(null);
-    if (next !== space.folder) await onUpdate({ folder: next });
+    if (next === space.folder) return;
+    // 绑定 = 把这个目录变成该空间所有会话的工作目录：读写文件不再逐次弹审批，
+    // 所以必须让用户明确知道后果。解绑（next 为空）不需要确认。
+    if (
+      next &&
+      !window.confirm(
+        `把「${space.name}」绑定到 ${next}？\n\n之后这个空间里的会话以它为工作目录：` +
+          `相对路径相对它解析、读写它里面的文件不再逐次询问（.env / .git 仍然拒绝）。`,
+      )
+    ) {
+      return;
+    }
+    await onUpdate({ folder: next });
   }
 
   return (
@@ -313,7 +325,7 @@ function SpaceBlock({
       </div>
 
       {space.folder && (
-        <div className="space__folder" title={space.folder}>
+        <div className="space__folder" title={`该空间里的会话以 ${space.folder} 为工作目录`}>
           <FolderIcon size={11} />
           {shortPath(space.folder)}
         </div>
@@ -384,7 +396,9 @@ function SpaceBlock({
             }}
           />
           <span className="session__hint">
-            {menu === "rename" ? "回车保存 · Esc 取消" : "只记录路径，暂不切换会话的工作目录"}
+            {menu === "rename"
+              ? "回车保存 · Esc 取消"
+              : "回车绑定 · 该空间的会话以它为工作目录"}
           </span>
         </div>
       )}

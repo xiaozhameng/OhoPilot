@@ -58,7 +58,7 @@ export function OverviewPage() {
 
   return (
     <>
-      <header className="admin__page-head">
+      <header className="page-head">
         <h1>数据概览</h1>
         <p>跨会话聚合 · 缓存命中率低于 50% 通常意味着前缀不稳定，优先修它</p>
       </header>

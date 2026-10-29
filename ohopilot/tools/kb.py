@@ -21,6 +21,7 @@ from ohopilot.kb.embedder import build_embedder
 from ohopilot.kb.store import build_vector_store
 from ohopilot.tools.base import Tool, ToolResult
 from ohopilot.tools.docs import read_docx_text, read_pdf_text, read_xlsx_text
+from ohopilot.workspace import active_workspace
 
 #: 一次索引最多多少块——防止有人把 10 万行的 csv 灌进来烧穿 embedding 配额
 MAX_CHUNKS = 2000
@@ -49,7 +50,7 @@ def _load_text(target: Path) -> str:
 def _source_name(cfg: Config, target: Path) -> str:
     """来源名：相对工作目录的路径；家目录文件（如上传件）用文件名前缀区分。"""
     try:
-        return str(target.relative_to(cfg.workspace))
+        return str(target.relative_to(active_workspace(cfg)))
     except ValueError:
         return str(target)
 
@@ -88,7 +89,7 @@ class KbIndexTool(Tool):
 
         target = Path(path).expanduser()
         if not target.is_absolute():
-            target = self.cfg.workspace / target
+            target = active_workspace(self.cfg) / target
         target = target.resolve()
         if not target.exists():
             return ToolResult.fail(f"文件不存在：{target}")

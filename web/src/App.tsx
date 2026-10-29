@@ -107,12 +107,17 @@ export default function App() {
   const bootOpened = useRef(false);
   useEffect(() => {
     if (bootOpened.current) return;
+    // 用 pathname 而不是 state.route：这个 effect 的依赖里没有 route，
+    // 闭包里的 route 可能是挂载时的旧值。直接落在控制台（比如收藏了 /console
+    // 或刷新控制台页）时不该抢页面——那正是第 38 步之后控制台的正规打开方式。
+    const path = window.location.pathname;
+    if (path.startsWith("/console") || path.startsWith("/extensions")) return;
     if (state.sessions.length === 0) return;
     bootOpened.current = true;
     if (new URLSearchParams(window.location.search).get("session")) return;
     if (state.sessionId) return;
     void openSession(state.sessions[0].session_id); // 列表按最后活跃时间倒序
-  }, [state.sessions]);
+  }, [state.sessions, route]);
 
   function rememberInUrl(sessionId: string | null) {
     // 控制台视图下别动地址：那是控制台自己的路由（/console/xxx），
@@ -288,6 +293,21 @@ export default function App() {
   // 「跳回控制台全屏页」的旧模式已退役，聊天状态（流式输出、输入框）都保在 state 里不丢
   const onConsole = route.startsWith("/console") || route.startsWith("/extensions");
 
+  /**
+   * 顶栏该显示哪个工作目录（第 39 步）：
+   * 当前会话所在空间绑了目录 → 显示那个目录（并标出来源）；
+   * 没绑 / 还没开会话 → 显示进程默认值（设置抽屉里能改的那个）。
+   *
+   * 后端是按会话解析的，前端这里只是"把同一件事算一遍用于展示"，
+   * 判断规则必须和后端一致：空间 → folder → 否则 cfg.workspace。
+   */
+  const currentSpace = state.sessions.find((s) => s.session_id === state.sessionId);
+  const boundSpace = state.spaces.find((sp) => sp.id === currentSpace?.space_id);
+  const boundFolder = boundSpace?.folder || "";
+  const workspaceInfo = boundFolder
+    ? { path: boundFolder, space: boundSpace?.name }
+    : { path: health?.workspace ?? "", space: undefined };
+
   return (
     <div className={`app${sidebarOpen ? " app--sidebar-open" : ""}`}>
       <Sidebar
@@ -314,6 +334,7 @@ export default function App() {
           <>
             <Topbar
               health={health}
+              workspace={workspaceInfo}
               title={rawTitle.length > 40 ? `${rawTitle.slice(0, 40)}…` : rawTitle}
               onOpenSettings={() => setDrawer("settings")}
               onOpenUsage={() => setDrawer("usage")}
@@ -358,7 +379,12 @@ export default function App() {
                 <div className="meter">
                   {state.lastTurnTokens > 0 && <span>本轮 {state.lastTurnTokens} tokens</span>}
                   {state.totalTokens > 0 && <span>本次累计 {state.totalTokens}</span>}
-                  {health && <span>{health.workspace}</span>}
+                  {workspaceInfo.path && (
+                    <span title={workspaceInfo.space ? `空间「${workspaceInfo.space}」绑定` : "默认工作目录"}>
+                      {workspaceInfo.path}
+                      {workspaceInfo.space ? "（空间目录）" : ""}
+                    </span>
+                  )}
                 </div>
               )}
             </div>

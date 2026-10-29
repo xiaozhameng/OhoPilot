@@ -13,6 +13,7 @@ from ohopilot.core.llm import AssistantTurn, LLMError, stream_chat
 from ohopilot.memory.longterm import load_longterm
 from ohopilot.skills.loader import load_skills, render_skill_index
 from ohopilot.tools.base import ToolRegistry
+from ohopilot.workspace import active_workspace
 
 from . import events as ev
 
@@ -47,7 +48,10 @@ def _as_decision(value: bool | ApprovalDecision) -> ApprovalDecision:
 def _system_prompt(cfg: Config, tool_names: list[str]) -> str:
     parts = [
         "你是 OhoPilot，一个跑在用户自己电脑上的中文办公助手。",
-        f"当前工作目录：{cfg.workspace}",
+        # 取"这一轮生效"的目录而不是进程默认值：会话所在空间绑了目录时，
+        # 模型看到的路径必须和文件工具实际校验的边界一致，否则它会按默认目录
+        # 拼相对路径，然后被边界检查拒掉，看起来像"工具坏了"
+        f"当前工作目录：{active_workspace(cfg)}",
         f"可用工具：{', '.join(tool_names)}",
     ]
 

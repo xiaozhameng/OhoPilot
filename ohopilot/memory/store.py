@@ -189,8 +189,9 @@ class SessionStore:
 
     # ---- 空间（会话分组，第 34 步）----
     # 默认空间 id=1：不指定空间的会话都归它，删不掉、改不了名。
-    # 空间只做「分类 + 记一个本地目录」；目录要不要变成会话的工作目录是
-    # 另一件事（涉及工具按会话切 workspace），不在这里偷偷做。
+    # 空间只负责「分类 + 记一个本地目录」。目录怎么变成会话的工作目录
+    # 不在这一层做：这里只回答"这个会话绑了哪个目录"（session_folder），
+    # 什么时候切、切了之后怎么隔离，是 ohopilot/workspace.py + Runtime.ask 的事。
 
     DEFAULT_SPACE_ID = 1
 
@@ -291,6 +292,23 @@ class SessionStore:
             (session_id, datetime.now().isoformat(timespec="seconds"), space_id),
         )
         self._conn.commit()
+
+    def session_folder(self, session_id: str) -> str:
+        """会话所在空间绑定的本地目录；没绑/空间没了都返回空串。
+
+        会话 → 空间 → 目录，两级查。三种情况统一返回空串，调用方只需判空，
+        不用关心"是没建空间、还是空间没绑目录"：
+          - 会话没有元信息行（第 34 步之前建的会话）；
+          - 空间被删了（会话会被搬回默认空间，默认空间也可能没绑目录）；
+          - 空间绑了空串（用户点了「解绑目录」）。
+        空串的语义是"用进程默认工作目录"，由 ohopilot/workspace.py 决定。
+        """
+        row = self._conn.execute(
+            "SELECT p.folder FROM sessions x JOIN spaces p ON p.id = COALESCE(x.space_id, 1) "
+            "WHERE x.session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return (row[0] or "") if row else ""
 
     def session_meta(self, session_id: str) -> dict[str, Any]:
         """别名 / 首句标题 / 创建时间 / 最后更新时间 / 消息条数。

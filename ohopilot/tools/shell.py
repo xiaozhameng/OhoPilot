@@ -28,6 +28,7 @@ from typing import Any
 
 from ohopilot.config import Config
 from ohopilot.tools.base import ApprovalScope, Tool, ToolResult
+from ohopilot.workspace import active_workspace
 from ohopilot.tools.grants import GrantStore, scope_options
 
 #: 单命令只读白名单（不含 shell 元字符时才放行）
@@ -213,11 +214,20 @@ class ShellTool(Tool):
         self.cfg = cfg
         self.grants = GrantStore(cfg.home)
 
+    @property
+    def workspace(self) -> Path:
+        """这一轮生效的工作目录：既是越界判断的根，也是子进程的 cwd。
+
+        两处必须用同一个值——不然会出现「判断时算在内、执行时 cwd 却在别处」，
+        命令跑到哪个目录全凭运气。
+        """
+        return active_workspace(self.cfg)
+
     # ---- 目录白名单 ----
 
     def _targets(self, command: str) -> list[Path]:
         """命令里出现的路径 → 绝对路径列表（去重，保持顺序）。"""
-        root = self.cfg.workspace
+        root = self.workspace
         out: list[Path] = []
         for token in _path_tokens(command):
             path = Path(token).expanduser()
@@ -262,7 +272,7 @@ class ShellTool(Tool):
 
     def needs_approval(self, arguments: dict[str, Any]) -> tuple[bool, str]:
         command = str(arguments.get("command", ""))
-        verdict, reason = classify(command, self.cfg.workspace)
+        verdict, reason = classify(command, self.workspace)
         # block 不弹窗（run 里会拒绝），只有 ask 才需要人点头
         if verdict != "ask":
             return False, ""
@@ -287,7 +297,7 @@ class ShellTool(Tool):
 
     async def run(self, command: str = "", timeout: int = 30, **_: Any) -> ToolResult:
         cmd = command.strip()
-        verdict, reason = classify(cmd, self.cfg.workspace)
+        verdict, reason = classify(cmd, self.workspace)
         if verdict == "block":
             return ToolResult.fail(f"命令被禁止执行（{reason}）：{cmd}")
 
@@ -297,7 +307,7 @@ class ShellTool(Tool):
         try:
             proc = await asyncio.create_subprocess_shell(
                 cmd,
-                cwd=str(self.cfg.workspace),
+                cwd=str(self.workspace),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # 合并：对模型来说顺序比区分流更重要
                 stdin=asyncio.subprocess.DEVNULL,  # 没有输入口，命令不会卡在等输入

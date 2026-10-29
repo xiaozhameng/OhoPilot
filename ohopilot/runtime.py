@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from ohopilot.config import Config
@@ -31,6 +32,7 @@ from ohopilot.tools.shell import ShellTool
 from ohopilot.tools.skills import build_skill_tools
 from ohopilot.tools.todo import build_todo_tools
 from ohopilot.tools.web import build_web_tools
+from ohopilot.workspace import use_workspace
 
 
 @dataclass
@@ -92,6 +94,23 @@ class Runtime:
     def load_history(self, session_id: str) -> list[dict[str, str]]:
         return self.store.load_history(session_id)
 
+    # ---------- 工作目录 ----------
+
+    def session_workspace(self, session_id: str) -> tuple[Path | None, str]:
+        """这个会话该用哪个工作目录：返回 (目录, 要告诉用户的提示)。
+
+        目录为 None 表示"不切，用进程默认值"（空间没绑目录时的常态）。
+        绑定目录不存在时也返回 None + 一句提示：降级继续，而不是让这轮对话
+        直接失败——目录被改名、外接盘没挂上，都是日常会发生的事。
+        """
+        raw = self.store.session_folder(session_id)
+        if not raw:
+            return None, ""
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            return None, f"空间绑定的目录不存在（{path}），这一轮改用默认工作目录"
+        return path.resolve(), ""
+
     def close(self) -> None:
         self.store.close()
         self.todos.close()
@@ -142,57 +161,66 @@ class Runtime:
         # 清单按会话隔离，而工具是全局单例——每轮开始先把会话号绑给 store。
         self.todos.set_session(session_id)
 
-        answer: list[str] = []
+        # 工作目录按会话切（第 39 步）：会话所属空间绑了本地目录，这一轮的文件
+        # 读写、shell 的 cwd、系统提示里告诉模型的路径，全部以它为边界。
+        # 用 ContextVar 而不是直接改 cfg.workspace——服务端的请求是并发的，
+        # 改共享的 cfg 会让两个会话互相踩。
+        folder, note = self.session_workspace(session_id)
+        if note:
+            yield ev.notice(note)
 
-        async for event in self.agent.run(question, history):
-            if event.type == "text":
-                answer.append(event.data["delta"])
-            elif event.type == "tool_result":
-                # 每次工具执行都记一笔流水（第 26 步控制台的「工具调用排行」数据源）。
-                # 耗时由 agent 掐表带在事件里；错误样本从结果原文截 200 字——
-                # 控制台排障时看的就是这一段，不是光秃秃的「失败了」
-                is_err = bool(event.data.get("is_error", False))
-                self.store.record_tool_call(
-                    session_id,
-                    event.data.get("name", ""),
-                    is_err,
-                    duration_ms=event.data.get("duration_ms"),
-                    error_excerpt=event.data.get("content", "")[:200] if is_err else None,
-                    round_no=event.data.get("round_no", 0),
-                )
-                if event.data.get("name", "").startswith("todo_"):
-                    # 清单工具刚改完库，追加一条全量快照事件给界面。
-                    # 拦截在这里而不是让工具自己发事件：工具只管干活，
-                    # 「怎么通知界面」是 Runtime（编排层）的事——和 usage 落库同一个套路。
-                    yield ev.todo(self.todos.list_items())
-            elif event.type == "usage":
-                # agent 不知道会话号，落库只能在这里做。存一份"每次模型调用"
-                # 的流水，开发者面板的图表全靠它；agent 主循环保持零存储依赖。
-                self.store.record_llm_call(
-                    session_id,
-                    round_no=event.data.get("round_no", 0),
-                    model=self.cfg.model,
-                    prompt_tokens=event.data.get("prompt_tokens", 0),
-                    cache_hit_tokens=event.data.get("cache_hit_tokens", 0),
-                    cache_miss_tokens=event.data.get("cache_miss_tokens", 0),
-                    completion_tokens=event.data.get("completion_tokens", 0),
-                    total_tokens=event.data.get("total_tokens", 0),
-                    duration_ms=event.data.get("duration_ms", 0),
-                    first_token_ms=event.data.get("first_token_ms", 0),
-                    context=event.data.get("context"),
-                    finish_reason=event.data.get("finish_reason", ""),
-                    reasoning_tokens=event.data.get("reasoning_tokens", 0),
-                    req_messages=event.data.get("req_messages", 0),
-                    req_tools=event.data.get("req_tools", 0),
-                    req_snapshot=event.data.get("req_snapshot"),
-                )
-                # 请求体快照只落库，不进 SSE：对话内容不该广播到界面事件流，
-                # 控制台想看时按 call id 单独拉（GET /console/llm-calls/{id}）
-                event.data.pop("req_snapshot", None)
-            elif event.type == "done":
-                # agent 不知道自己在哪个会话里，done 统一由 Runtime 发
-                continue
-            yield event
+        with use_workspace(folder):
+            answer: list[str] = []
+
+            async for event in self.agent.run(question, history):
+                if event.type == "text":
+                    answer.append(event.data["delta"])
+                elif event.type == "tool_result":
+                    # 每次工具执行都记一笔流水（第 26 步控制台的「工具调用排行」数据源）。
+                    # 耗时由 agent 掐表带在事件里；错误样本从结果原文截 200 字——
+                    # 控制台排障时看的就是这一段，不是光秃秃的「失败了」
+                    is_err = bool(event.data.get("is_error", False))
+                    self.store.record_tool_call(
+                        session_id,
+                        event.data.get("name", ""),
+                        is_err,
+                        duration_ms=event.data.get("duration_ms"),
+                        error_excerpt=event.data.get("content", "")[:200] if is_err else None,
+                        round_no=event.data.get("round_no", 0),
+                    )
+                    if event.data.get("name", "").startswith("todo_"):
+                        # 清单工具刚改完库，追加一条全量快照事件给界面。
+                        # 拦截在这里而不是让工具自己发事件：工具只管干活，
+                        # 「怎么通知界面」是 Runtime（编排层）的事——和 usage 落库同一个套路。
+                        yield ev.todo(self.todos.list_items())
+                elif event.type == "usage":
+                    # agent 不知道会话号，落库只能在这里做。存一份"每次模型调用"
+                    # 的流水，开发者面板的图表全靠它；agent 主循环保持零存储依赖。
+                    self.store.record_llm_call(
+                        session_id,
+                        round_no=event.data.get("round_no", 0),
+                        model=self.cfg.model,
+                        prompt_tokens=event.data.get("prompt_tokens", 0),
+                        cache_hit_tokens=event.data.get("cache_hit_tokens", 0),
+                        cache_miss_tokens=event.data.get("cache_miss_tokens", 0),
+                        completion_tokens=event.data.get("completion_tokens", 0),
+                        total_tokens=event.data.get("total_tokens", 0),
+                        duration_ms=event.data.get("duration_ms", 0),
+                        first_token_ms=event.data.get("first_token_ms", 0),
+                        context=event.data.get("context"),
+                        finish_reason=event.data.get("finish_reason", ""),
+                        reasoning_tokens=event.data.get("reasoning_tokens", 0),
+                        req_messages=event.data.get("req_messages", 0),
+                        req_tools=event.data.get("req_tools", 0),
+                        req_snapshot=event.data.get("req_snapshot"),
+                    )
+                    # 请求体快照只落库，不进 SSE：对话内容不该广播到界面事件流，
+                    # 控制台想看时按 call id 单独拉（GET /console/llm-calls/{id}）
+                    event.data.pop("req_snapshot", None)
+                elif event.type == "done":
+                    # agent 不知道自己在哪个会话里，done 统一由 Runtime 发
+                    continue
+                yield event
 
         text = "".join(answer)
 

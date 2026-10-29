@@ -265,14 +265,16 @@ function SettingsForm({
       </label>
 
       <label className="field">
-        <span className="field__label">工作目录</span>
+        <span className="field__label">默认工作目录</span>
         <input
           className="field__input"
           value={workspace}
           onChange={(e) => setWorkspace(e.target.value)}
           placeholder="/Users/you/project"
         />
-        <span className="field__hint">文件工具与 shell 的硬边界，必须是已存在的目录</span>
+        <span className="field__hint">
+          空间没绑目录时用它；空间绑了目录的会话以那个目录为边界。必须是已存在的目录
+        </span>
       </label>
 
       <button className="btn btn--primary btn--block" onClick={save} disabled={saving}>

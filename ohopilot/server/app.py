@@ -96,10 +96,16 @@ class AliasBody(BaseModel):
 
 
 class SpaceBody(BaseModel):
-    """新建/修改空间。folder 是可选的本地目录路径（元数据）。"""
+    """新建/修改空间。
+
+    folder 三态，别混：
+      - 不传（None）→ 不动现有绑定（改名时走这条，不能顺手把目录清掉）
+      - 空串        → 解绑
+      - 绝对路径    → 绑定它
+    """
 
     name: str = Field(default="", max_length=60)
-    folder: str = Field(default="", max_length=400)
+    folder: str | None = Field(default=None, max_length=400)
 
 
 class MemoryBody(BaseModel):
@@ -137,10 +143,31 @@ class McpServerBody(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
 
 
+def _checked_folder(raw: str | None) -> str | None:
+    """校验空间要绑定的目录。
+
+    None / 空串原样返回（= 不改 / 解绑），非空必须是**已存在的目录**，
+    否则 422 当场说清楚——写错一个字母就让整个空间的会话跑回默认目录，
+    那种"文件写到别的项目里去了"的故障排查起来极其费劲。
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return ""
+    target = Path(text).expanduser()
+    if not target.is_dir():
+        raise HTTPException(status_code=422, detail=f"目录不存在：{target}")
+    return str(target.resolve())
+
+
 def _health(rt: Runtime, broker: ApprovalBroker) -> dict[str, Any]:
     return {
         "ok": has_credentials(rt.cfg),
         "model": rt.cfg.model,
+        # 这里是**默认**工作目录（空间没绑目录时用它），不是某个会话此刻的目录：
+        # /health 是进程级接口，不知道前端正在看哪个会话。按会话的目录由
+        # Runtime.session_workspace() 解析，前端拿 space.folder 自己算展示值。
         "workspace": str(rt.cfg.workspace),
         "tools": rt.registry.names(),
         "pending_approvals": broker.pending_count,
@@ -174,8 +201,9 @@ def create_app() -> FastAPI:
 
     @app.post("/settings")
     async def update_settings(body: SettingsBody, request: Request) -> dict[str, Any]:
-        """改运行时配置。改的是 rt.cfg 这个**同一个对象**，所以工具立刻就能看到新值：
-        fs/shell 的边界读的是 cfg.workspace，模型名读的是 cfg.model。"""
+        """改运行时配置。改的是 rt.cfg 这个**同一个对象**，所以立刻生效：
+        模型名读 cfg.model；工作目录这里改的是**默认值**（cfg.workspace），
+        会话所在空间绑了目录时用那个目录，不读这个默认值。"""
         rt: Runtime = request.app.state.rt
 
         if body.model is not None:
@@ -212,19 +240,19 @@ def create_app() -> FastAPI:
     async def create_space(body: SpaceBody, request: Request) -> dict[str, Any]:
         rt: Runtime = request.app.state.rt
         try:
-            return rt.store.create_space(body.name, body.folder)
+            return rt.store.create_space(body.name, _checked_folder(body.folder) or "")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.patch("/spaces/{space_id}")
     async def patch_space(space_id: int, body: SpaceBody, request: Request) -> dict[str, Any]:
-        """改名或绑定目录。注意 name 传空串表示"不改"，不是"改成空名"。"""
+        """改名或绑定目录。name 传空串表示"不改"，folder 不传表示"不动"。"""
         rt: Runtime = request.app.state.rt
         try:
             return rt.store.update_space(
                 space_id,
                 name=body.name or None,
-                folder=body.folder,  # 空串 = 解绑
+                folder=_checked_folder(body.folder),
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

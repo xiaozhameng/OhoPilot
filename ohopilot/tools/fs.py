@@ -16,6 +16,7 @@ from typing import Any
 from ohopilot.config import Config
 from ohopilot.tools.base import ApprovalScope, Tool, ToolResult
 from ohopilot.tools.grants import GrantStore, scope_options
+from ohopilot.workspace import active_workspace
 
 MAX_READ_BYTES = 200_000
 
@@ -46,6 +47,15 @@ class _FsTool(Tool):
     def _is_protected(self, path: Path) -> bool:
         return any(part in self.PROTECTED for part in path.parts)
 
+    @property
+    def workspace(self) -> Path:
+        """这一轮生效的工作目录（第 39 步：会话所在空间绑了目录就用它）。
+
+        刻意做成属性而不是在 __init__ 里存一份：工具是进程级单例，
+        而「哪个会话用什么目录」是每轮问答才确定的。存下来就会串会话。
+        """
+        return active_workspace(self.cfg)
+
     def _scope_options(
         self, target: Path, levels: int = 3, only_once: bool = False
     ) -> list[ApprovalScope]:
@@ -56,12 +66,13 @@ class _FsTool(Tool):
 
     def _resolve(self, raw: str) -> tuple[Path, bool]:
         """把用户给的路径变成绝对路径，并判断是否在工作根目录内。"""
+        root = self.workspace  # 只取一次：同一个路径的"相对谁"和"是否在内"必须同一个根
         path = Path(raw).expanduser()
         if not path.is_absolute():
-            path = self.cfg.workspace / path
+            path = root / path
         path = path.resolve()
         try:
-            path.relative_to(self.cfg.workspace)
+            path.relative_to(root)
             inside = True
         except ValueError:
             inside = False
@@ -201,7 +212,7 @@ class WriteFileTool(_FsTool):
         if not inside and not home_inside and not self.grants.covers(self.name, target):
             return ToolResult.fail(
                 f"需要授权才能写这个位置：{target}\n"
-                f"默认可写范围是工作目录（{self.cfg.workspace}）"
+                f"默认可写范围是工作目录（{self.workspace}）"
                 f"和数据家目录（{self.cfg.home}）。"
                 "如果刚才弹过审批而用户选了「拒绝」，就是这里的结果。"
             )
@@ -249,7 +260,7 @@ class ListDirTool(_FsTool):
         if not inside:
             return ToolResult.fail(
                 f"路径超出工作目录，已拒绝：{target}\n"
-                f"访问只允许在工作目录内进行：{self.cfg.workspace}"
+                f"访问只允许在工作目录内进行：{self.workspace}"
             )
         if self._is_protected(target):
             return ToolResult.fail(f"禁止访问受保护路径：{target}")
@@ -353,7 +364,7 @@ class SearchTool(_FsTool):
 
         for file in files:
             try:
-                rel = file.relative_to(self.cfg.workspace)
+                rel = file.relative_to(self.workspace)
             except ValueError:
                 rel = file
 

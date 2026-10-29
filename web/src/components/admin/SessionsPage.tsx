@@ -104,7 +104,7 @@ export function SessionsPage() {
 
   return (
     <>
-      <header className="admin__page-head">
+      <header className="page-head">
         <h1>会话分析</h1>
         <p>左侧选会话，右侧看这一场对话的完整轨迹：每轮模型调用 + 该轮工具链 + 请求原文</p>
       </header>

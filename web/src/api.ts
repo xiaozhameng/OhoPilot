@@ -137,15 +137,27 @@ export async function createSpace(name: string, folder = ""): Promise<Space> {
   return (await resp.json()) as Space;
 }
 
-/** 改名 / 绑目录。folder 传空串 = 解绑；name 传空串 = 不改名。 */
+/**
+ * 改名 / 绑目录。只发调用方真正给了的字段：
+ * `folder` 传空串才是「解绑」，不传就是「别动它」。
+ *
+ * 这两个语义必须分开——原来无条件发 `folder: patch.folder ?? ""`，
+ * 结果「改个空间名」会顺手把已绑定的目录清空（folder 被缺省值覆盖成空串）。
+ * 目录以前只是备注，这个 bug 无害；现在它真的是工作目录，就会让会话
+ * 突然跑回默认目录里干活。
+ */
 export async function updateSpace(
   spaceId: number,
   patch: { name?: string; folder?: string },
 ): Promise<Space> {
+  const body: Record<string, string> = {};
+  if (patch.name !== undefined) body.name = patch.name;
+  if (patch.folder !== undefined) body.folder = patch.folder;
+
   const resp = await fetch(`${BASE}/spaces/${spaceId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: patch.name ?? "", folder: patch.folder ?? "" }),
+    body: JSON.stringify(body),
   });
   if (!resp.ok) throw new Error(await readError(resp));
   return (await resp.json()) as Space;

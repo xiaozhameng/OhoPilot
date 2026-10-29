@@ -480,22 +480,42 @@ async def test_截断信封的快照摘要为空(server):
 
 # ---------- 第 34 步：空间（会话分组） ----------
 
-async def test_空间可建可改可绑目录(server):
+async def test_空间可建可改可绑目录(server, tmp_path):
+    target = tmp_path / "pay"
+    target.mkdir()
+
     created = (
-        await server.client.post("/spaces", json={"name": "支付项目", "folder": "~/Desktop/pay"})
+        await server.client.post("/spaces", json={"name": "支付项目", "folder": str(target)})
     ).json()
     assert created["id"] > 1
-    assert created["folder"] == "~/Desktop/pay"
+    assert created["folder"] == str(target.resolve())  # 统一存绝对路径
 
+    # 改名不能顺手把目录清掉：folder 不传 = 不动现有绑定。
+    # 这是第 39 步修掉的 bug——以前 PATCH 无条件带 folder: ""，
+    # 改个空间名就把目录解绑了，目录变成工作目录后这是会写错地方的故障。
     renamed = (
-        await server.client.patch(f"/spaces/{created['id']}", json={"name": "支付二期", "folder": ""})
+        await server.client.patch(f"/spaces/{created['id']}", json={"name": "支付二期"})
     ).json()
     assert renamed["name"] == "支付二期"
-    assert renamed["folder"] == ""  # 空串 = 解绑
+    assert renamed["folder"] == str(target.resolve())
+
+    unbound = (
+        await server.client.patch(f"/spaces/{created['id']}", json={"name": "", "folder": ""})
+    ).json()
+    assert unbound["folder"] == ""  # 显式空串才是解绑
 
     listed = (await server.client.get("/spaces")).json()["spaces"]
     assert listed[0]["name"] == "默认空间"  # 默认空间永远第一
     assert any(s["id"] == created["id"] for s in listed)
+
+
+async def test_绑一个不存在的目录返回422(server):
+    """目录写错一个字母就 422 当场说清楚：否则那个空间的会话会静默跑回默认目录。"""
+    resp = await server.client.post(
+        "/spaces", json={"name": "错目录", "folder": "/definitely/not/here"}
+    )
+    assert resp.status_code == 422
+    assert "目录不存在" in resp.json()["detail"]
 
 
 async def test_空间重名返回422(server):

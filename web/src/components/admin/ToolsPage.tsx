@@ -48,7 +48,7 @@ export function ToolsPage() {
 
   return (
     <>
-      <header className="admin__page-head">
+      <header className="page-head">
         <h1>工具调用</h1>
         <p>平均耗时高 + 失败多 = 该加超时或缓存；最大耗时远超平均 = 偶发卡死</p>
       </header>

@@ -58,7 +58,7 @@ export function MemoryPage() {
 
   return (
     <>
-      <header className="admin__page-head">
+      <header className="page-head">
         <h1>记忆数据</h1>
         <p>
           长期记忆：跨会话的事实与偏好，每轮对话都会注入系统提示。agent 自己只往里追加；

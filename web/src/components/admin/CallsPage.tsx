@@ -50,7 +50,7 @@ export function CallsPage() {
 
   return (
     <>
-      <header className="admin__page-head">
+      <header className="page-head">
         <h1>调用流水</h1>
         <p>最近 100 次模型调用 · 输入拆成命中/未命中两桶 · 点「请求」看该次到底发了什么</p>
       </header>

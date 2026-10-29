@@ -137,126 +137,18 @@ pre {
   background: linear-gradient(to bottom, transparent, var(--bg) 24px);
 }
 
-/* ---------- 管理后台骨架（控制台分析化改版） ---------- */
-/* 左侧栏固定 200px + 内容区铺满剩余宽度；不再是 860px 居中窄页 */
+/* ---------- 控制台页面的通用头（原 admin 骨架，第 39 步清理） ---------- */
+/* 第 38 步把控制台搬进 main 区后，.admin / .admin__side / .admin__nav /
+   .admin__main 这一整套全屏骨架就没人用了（自己带侧栏和「返回工作台」按钮，
+   与新的内嵌式布局冲突）。留着是纯粹的误导：下次改布局会以为它还在生效。
+   只保留仍被五个 admin 页共用的标题区。 */
 
-.admin {
-  display: flex;
-  min-height: 100vh;
-  background: var(--bg);
-}
-
-.admin__side {
-  width: 200px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 16px 10px;
-  border-right: 1px solid var(--border);
-  background: var(--sidebar);
-  position: sticky;
-  top: 0;
-  height: 100vh;
-}
-
-.admin__brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 8px;
-}
-
-.admin__logo {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.admin__brand strong {
-  display: block;
-  font-size: 13px;
-  line-height: 1.2;
-}
-
-.admin__brand small {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.admin__nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-}
-
-.admin__nav-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: var(--radius);
-  font-size: 13px;
-  color: var(--text-2);
-  text-decoration: none;
-}
-
-.admin__nav-item:hover {
-  background: var(--panel);
-}
-
-.admin__nav-item.is-active {
-  background: var(--accent);
-  color: #fff;
-}
-
-.admin__nav-icon {
-  width: 16px;
-  text-align: center;
-  opacity: 0.85;
-}
-
-.admin__foot {
-  padding: 0 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-}
-
-.admin__foot a {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-.admin__foot small {
-  color: var(--muted);
-}
-
-.admin__main {
-  flex: 1;
-  min-width: 0;
-  padding: 24px 28px 56px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.admin__page-head h1 {
+.page-head h1 {
   margin: 0;
   font-size: 18px;
 }
 
-.admin__page-head p {
+.page-head p {
   margin: 4px 0 0;
   font-size: 12px;
   color: var(--muted);
@@ -1410,6 +1302,14 @@ div.session:focus-visible {
 .pill--dim {
   color: var(--muted);
   background: transparent;
+}
+
+/* 目录来自空间绑定（不是默认值）时换个颜色：两者含义不同，
+   长得一样会让用户以为"我明明在设置里改过目录，怎么没生效" */
+.pill--path-space {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
 }
 
 .icon-btn {
@@ -2959,7 +2859,7 @@ div.session:focus-visible {
   opacity: 0.85;
 }
 
-/* 沿用原 admin__main 的内边距节奏，页面组件不用改 */
+/* 页面内容的内边距：控制台每页都按这个节奏排，页面组件自己不用管留白 */
 .cpanel__body {
   flex: 1;
   min-height: 0;
