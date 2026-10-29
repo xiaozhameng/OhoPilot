@@ -98,19 +98,30 @@ async def test_写操作标记为需要审批(cfg):
     assert tool.needs_approval({"path": "x", "content": ""}) == (True, "该操作可能修改你的电脑")
 
 
-async def test_写出工作目录直接拒绝(cfg, tmp_path):
-    outside = tmp_path / "outside.txt"
-    result = await WriteFileTool(cfg).run(path=str(outside), content="x")
+async def test_写出工作目录需要审批_无授权时拒绝(cfg, tmp_path):
+    """第 32 步起：边界外的写不再"一律拒绝"，而是"先问"。
 
+    问过但用户只点了「仅本次」→ 没有规则落地，run 仍然要拒绝并说清原因，
+    否则"点了允许却没写"会变成一个查不出原因的悬案。
+    """
+    outside = tmp_path / "outside.txt"
+    tool = WriteFileTool(cfg)
+
+    need, reason = tool.needs_approval({"path": str(outside), "content": "x"})
+    assert need is True
+    assert "工作目录之外" in reason
+
+    result = await tool.run(path=str(outside), content="x")
     assert result.is_error
-    assert "超出可写范围" in result.content
+    assert "需要授权" in result.content
     assert not outside.exists()
 
 
-async def test_写相对路径跳出工作目录也拒绝(cfg):
-    result = await WriteFileTool(cfg).run(path="../../evil.txt", content="x")
-    assert result.is_error
-    assert "超出可写范围" in result.content
+async def test_相对路径跳出工作目录也要审批(cfg):
+    tool = WriteFileTool(cfg)
+    need, _ = tool.needs_approval({"path": "../../evil.txt", "content": "x"})
+    assert need is True
+    assert (await tool.run(path="../../evil.txt", content="x")).is_error
 
 
 async def test_禁止覆盖_env(cfg, writer):
@@ -279,11 +290,11 @@ async def test_家目录内部文件拒绝裸写(cfg):
 
 
 async def test_家目录和工作目录之外仍拒绝(cfg, tmp_path):
-    """放开了家目录，不等于全盘可写：桌面、其他仓库照样拒。"""
+    """放开了家目录，不等于全盘可写：桌面、其他仓库要授权后才写。"""
     outside = tmp_path / "elsewhere" / "a.txt"
     result = await WriteFileTool(cfg).run(path=str(outside), content="x")
     assert result.is_error
-    assert "可写范围" in result.content
+    assert "需要授权" in result.content
 
 
 async def test_工作目录下的同名内部文件不受家目录保护清单影响(cfg):

@@ -18,6 +18,7 @@ from typing import Any
 
 from rich.console import Console
 
+from ohopilot.core.agent import ApprovalDecision
 from ohopilot.core.llm import has_credentials
 from ohopilot.runtime import Runtime
 
@@ -37,12 +38,15 @@ async def terminal_approver(
     name: str,
     arguments: dict[str, Any],
     reason: str,
-) -> bool:
+) -> ApprovalDecision:
     """终端里的审批员：把危险操作亮出来，等用户敲 y/n。
 
     决策权在内核（要不要问），交互在界面（怎么问）——
     服务端只要换一个实现（推 HTTP 给前端弹窗），agent 不用动。
     call_id 在这里用不上（终端同时只有一个弹窗），HTTP 版本靠它对应请求。
+
+    终端只给「这一次」：要在终端里挑"授权哪个目录"，得列一串编号，
+    敲错一个数字的代价比多按几次 y 大得多。按目录授权走网页控制台。
     """
     console.print()
     console.print(f"[yellow]⚠ 需要确认[/yellow] {name} 想执行一个有风险的操作：{reason}")
@@ -51,8 +55,8 @@ async def terminal_approver(
         answer = input("  允许执行吗？(y = 允许，其他任意键 = 拒绝) › ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         # 管道 / 脚本场景下没人能回答 —— 问不了就等于拒绝
-        return False
-    return answer in {"y", "yes"}
+        return ApprovalDecision(allow=False)
+    return ApprovalDecision(allow=answer in {"y", "yes"})
 
 
 async def ask(

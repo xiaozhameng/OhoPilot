@@ -198,3 +198,47 @@ def test_空库的用量总账不炸_命中率为零(store):
     s = store.usage_summary("不存在")
     assert s["calls"] == 0
     assert s["cache_hit_rate"] == 0.0
+
+
+# ---------- 会话元信息：别名与时间 ----------
+
+def test_别名可改可清_并出现在列表里(store):
+    store.append("s1", "user", "帮我把桌面的报告合并一下")
+    store.append("s1", "assistant", "好的")
+
+    assert store.set_alias("s1", "  合并报告  ") == "合并报告"
+    assert store.get_alias("s1") == "合并报告"
+
+    row = store.recent_sessions()[0]
+    assert row["session_id"] == "s1"
+    assert row["alias"] == "合并报告"
+    assert row["title"].startswith("帮我把桌面")
+    assert row["created_at"] and row["updated_at"]
+    assert row["messages"] == 2
+
+    # 清空 = 回退到首句标题，不是变成空标题
+    assert store.set_alias("s1", "  ") == ""
+    assert store.get_alias("s1") == ""
+    assert store.recent_sessions()[0]["alias"] == ""
+
+
+def test_别名限长_避免侧栏被撑爆(store):
+    store.append("s1", "user", "q")
+    assert len(store.set_alias("s1", "很长" * 100)) == 60
+
+
+def test_会话详情的元信息(store):
+    store.append("s1", "user", "第一问")
+    meta = store.session_meta("s1")
+
+    assert meta["session_id"] == "s1"
+    assert meta["title"] == "第一问"
+    assert meta["messages"] == 1
+    assert meta["created_at"] == meta["updated_at"]
+
+
+def test_不存在的会话元信息是空值(store):
+    meta = store.session_meta("nope")
+    assert meta["messages"] == 0
+    assert meta["title"] == ""
+    assert meta["created_at"] == ""

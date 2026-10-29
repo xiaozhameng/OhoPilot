@@ -8,6 +8,11 @@
 
 为什么 allow 要两个条件同时成立：`ls; rm -rf ~` 的第一个词也是 ls。
 宁可多弹一次审批，不可误放行一次。
+
+第四档（第 32 步加）：**目录白名单**。
+用户在审批时选了「允许这个目录」，之后凡是"命令里出现的路径全在这个目录内、
+且没有任何删除/搬运/改权限动作"的 ask，就直接执行，不再打扰。
+判断只认路径，不认命令前缀——前缀能被无数种写法绕过，路径才是用户真正授权的东西。
 """
 
 from __future__ import annotations
@@ -15,13 +20,15 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import signal
 import time
 from pathlib import Path
 from typing import Any
 
 from ohopilot.config import Config
-from ohopilot.tools.base import Tool, ToolResult
+from ohopilot.tools.base import ApprovalScope, Tool, ToolResult
+from ohopilot.tools.grants import GrantStore, scope_options
 
 #: 单命令只读白名单（不含 shell 元字符时才放行）
 SAFE_SINGLE = {
@@ -71,6 +78,40 @@ BLOCK_PATTERNS: list[tuple[str, str]] = [
 #: 环境变量里带这些词的，不给子进程继承——
 #: 否则模型只要执行一次 `env`，就能把 API Key 读走（10b 那次泄露的同类风险）
 _SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
+
+#: 这些动作永远不走目录白名单。
+#: 用户授权一个目录时想的是「在这里新建/修改文件」，不是「这里的东西随你处置」；
+#: 删除、搬运、改权限、跑 AppleScript 都能让文件消失，必须每次问。
+#: 全文按词匹配（不限段首）：`find … | xargs rm` 这种藏在管道中段的也要拦。
+#: 代价是 `grep rm a.txt` 这种误伤也会退回审批——宁可多问，不可漏放。
+_DESTRUCTIVE = re.compile(
+    r"\b(?:sudo|doas|rm|rmdir|mv|dd|chmod|chown|ln|truncate|"
+    r"kill|pkill|killall|defaults|security|launchctl|osascript|diskutil|"
+    r"shutdown|reboot)\b"
+)
+
+#: 重定向符号可能和文件名连在一起（>a.txt / 2>>a.txt），先剥掉再判断像不像路径
+_REDIRECT = re.compile(r"^\d*[<>]+")
+
+
+def _path_tokens(command: str) -> list[str]:
+    """把命令里像路径的参数挑出来。
+
+    只认「~ 开头 / 绝对路径 / ./ ../ 开头」的 token：裸文件名一定落在工作目录，
+    而工作目录之外才是需要授权的范围，没必要为此把每个参数都当路径解析。
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:  # 引号没配对（模型写的命令可能不合法）
+        tokens = command.split()
+    found: list[str] = []
+    for raw in tokens:
+        token = _REDIRECT.sub("", raw.strip("\"'"))
+        if not token or token.startswith("-") or "://" in token:
+            continue
+        if token.startswith(("~", "/", "./", "../")):
+            found.append(token)
+    return found
 
 
 def _outside_paths(words: list[str], workspace: Path) -> str:
@@ -170,13 +211,79 @@ class ShellTool(Tool):
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
+        self.grants = GrantStore(cfg.home)
+
+    # ---- 目录白名单 ----
+
+    def _targets(self, command: str) -> list[Path]:
+        """命令里出现的路径 → 绝对路径列表（去重，保持顺序）。"""
+        root = self.cfg.workspace
+        out: list[Path] = []
+        for token in _path_tokens(command):
+            path = Path(token).expanduser()
+            if not path.is_absolute():
+                path = root / path
+            try:
+                path = path.resolve()
+            except OSError:
+                path = path.absolute()
+            if path not in out:
+                out.append(path)
+        return out
+
+    @staticmethod
+    def _dir_of(path: Path) -> Path:
+        """token 是文件还是目录。猜的依据：已存在看 is_dir，
+        不存在看有没有后缀（`proj` 当目录、`a.txt` 当文件）。"""
+        if path.exists():
+            return path if path.is_dir() else path.parent
+        return path.parent if path.suffix else path
+
+    def _common_dir(self, targets: list[Path]) -> Path:
+        """所有目标路径的最近公共目录——授权它，这批改动就都盖住了。"""
+        common = self._dir_of(targets[0])
+        for target in targets[1:]:
+            folder = self._dir_of(target)
+            while common != folder and common not in folder.parents:
+                if common == common.parent:
+                    return common
+                common = common.parent
+        return common
+
+    def _covered_by_grant(self, command: str) -> bool:
+        if _DESTRUCTIVE.search(command) or "-delete" in command:
+            return False
+        targets = self._targets(command)
+        if not targets:
+            # 没有路径参数（pip install / brew install）：无法判断影响范围，
+            # 也就无从"按目录"授权，老实弹审批
+            return False
+        return self.grants.covers_all(self.name, targets)
 
     def needs_approval(self, arguments: dict[str, Any]) -> tuple[bool, str]:
-        verdict, reason = classify(str(arguments.get("command", "")), self.cfg.workspace)
+        command = str(arguments.get("command", ""))
+        verdict, reason = classify(command, self.cfg.workspace)
         # block 不弹窗（run 里会拒绝），只有 ask 才需要人点头
-        if verdict == "ask":
-            return True, reason
-        return False, ""
+        if verdict != "ask":
+            return False, ""
+        if self._covered_by_grant(command):
+            return False, ""
+        return True, reason
+
+    def approval_options(self, arguments: dict[str, Any]) -> list[ApprovalScope]:
+        targets = self._targets(str(arguments.get("command", "")))
+        if not targets:
+            return [ApprovalScope("once", "仅本次")]
+        return scope_options(self._common_dir(targets), self.cfg.home)
+
+    def apply_grant(self, kind: str, path: str) -> str:
+        if kind not in {"file", "dir"} or not path:
+            return ""
+        grant = self.grants.add(self.name, path, kind, label=Path(path).name)
+        return (
+            f"已加入命令白名单：{grant.path}（删除/搬运类命令仍需确认）"
+            "——撤销请到控制台 → 工具 → 目录白名单"
+        )
 
     async def run(self, command: str = "", timeout: int = 30, **_: Any) -> ToolResult:
         cmd = command.strip()

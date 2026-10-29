@@ -19,6 +19,7 @@ import pytest
 import pytest_asyncio
 
 from ohopilot.core import events as ev
+from ohopilot.core.agent import ApprovalDecision
 from ohopilot.server import app as server_app
 from ohopilot.server.app import create_app, lifespan
 from ohopilot.server.approvals import ApprovalBroker
@@ -56,8 +57,8 @@ class ApprovingAgent:
 
     async def run(self, question, history=None):
         yield ev.approval_request("call-1", "fs_write_file", {"path": "a.txt"}, "写操作")
-        allowed = await self.broker.approver("call-1", "fs_write_file", {}, "写操作")
-        yield ev.text("已允许" if allowed else "已拒绝")
+        decision = await self.broker.approver("call-1", "fs_write_file", {}, "写操作")
+        yield ev.text("已允许" if decision.allow else "已拒绝")
         yield ev.done("")
 
 
@@ -219,7 +220,12 @@ async def test_审批全链路_前端允许后继续执行(server):
     assert server.app.state.broker.pending_count == 1
 
     answer = await server.client.post("/approvals/call-1", json={"allow": True})
-    assert answer.json() == {"resolved": True, "call_id": "call-1", "allow": True}
+    body = answer.json()
+    assert body["resolved"] is True
+    assert body["allow"] is True
+    # 没选范围 = 只这一次，响应里回显默认值
+    assert body["kind"] == "once"
+    assert body["path"] == ""
 
     resp = await chat
     assert "已允许" in resp.text
@@ -288,13 +294,16 @@ async def test_broker_挂起直到有人回答():
     assert broker.pending_count == 1
 
     assert broker.resolve("c1", True) is True
-    assert await task is True
+    decision = await task
+    assert decision.allow is True
+    assert decision.kind == "once"
     assert broker.pending_count == 0  # 唤醒后立刻清理，别留悬空 Future
 
 
 async def test_broker_超时按拒绝():
     broker = ApprovalBroker(timeout=0.05)
-    assert await broker.approver("c1", "x", {}, "r") is False
+    decision = await broker.approver("c1", "x", {}, "r")
+    assert decision.allow is False
 
 
 async def test_broker_重复回答返回_False():
@@ -305,7 +314,7 @@ async def test_broker_重复回答返回_False():
 
     assert broker.resolve("c1", False) is True
     assert broker.resolve("c1", True) is False
-    assert await task is False
+    assert (await task).allow is False
 
 
 async def test_broker_多个会话各挂一个互不干扰():
@@ -316,11 +325,24 @@ async def test_broker_多个会话各挂一个互不干扰():
     assert broker.pending_count == 2
 
     broker.resolve("b", True)
-    assert await b is True
+    assert (await b).allow is True
     assert not a.done()
 
     broker.resolve("a", False)
-    assert await a is False
+    assert (await a).allow is False
+
+
+async def test_审批可以带授权范围():
+    """用户点「允许，并且这个目录以后都行」时，范围要原样传到内核。"""
+    broker = ApprovalBroker(timeout=5)
+    task = asyncio.create_task(broker.approver("c1", "fs_write_file", {}, "r"))
+    await asyncio.sleep(0.01)
+
+    broker.resolve("c1", True, "dir", "/Users/me/Desktop/proj")
+    decision = await task
+    assert decision.allow is True
+    assert decision.kind == "dir"
+    assert decision.path == "/Users/me/Desktop/proj"
 
 
 async def test_客户端断开时审批按拒绝处理():
@@ -333,9 +355,9 @@ async def test_客户端断开时审批按拒绝处理():
     try:
         result = await task
     except asyncio.CancelledError:
-        result = False  # 两种收敛都算「没有挂住」，都不该是 True
+        result = ApprovalDecision(allow=False)
 
-    assert result is False
+    assert result.allow is False
     assert broker.pending_count == 0
 
 
@@ -420,7 +442,7 @@ async def test_console_overview_跨会话聚合(server):
     await server.client.post("/chat", json={"message": "甲"})
     await server.client.post("/chat", json={"message": "乙"})
 
-    resp = await server.client.get("/console/overview")
+    resp = await server.client.get("/console/api/overview")
     body = resp.json()
 
     assert resp.status_code == 200
@@ -435,7 +457,7 @@ async def test_console_overview_统计工具调用(server):
     server.rt.store.record_tool_call("s1", "fs_read_file", False)
     server.rt.store.record_tool_call("s1", "shell_run", True)
 
-    body = (await server.client.get("/console/overview")).json()
+    body = (await server.client.get("/console/api/overview")).json()
 
     assert body["tool_calls_total"] == 3
     assert body["tool_errors_total"] == 1

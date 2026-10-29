@@ -58,6 +58,13 @@ class AssistantTurn:
     cache_miss_tokens: int = 0
     duration_ms: int = 0       # 本次调用总耗时
     first_token_ms: int = 0    # 从发请求到收到第一个增量的延迟（用户感知的"等多久开始出字"）
+    # ---- 可观测性字段（控制台分析化）----
+    # finish_reason：stop=正常结束 tool_calls=要调工具 length=被 max_tokens 截断。
+    # length 是最隐蔽的坑：表现为"回答莫名少半截"，不记下来永远查不到原因。
+    finish_reason: str = ""
+    # reasoning_tokens：思考模型的隐藏输出（DeepSeek-R1 / o 系列），混在
+    # completion 里会让"输出为什么这么贵"无从解释，单独拆一桶。
+    reasoning_tokens: int = 0
 
 class LLMError(RuntimeError):
     """把底层异常包一层，方便界面统一提示。"""
@@ -108,6 +115,22 @@ def _cache_fields(usage: Any) -> tuple[int, int]:
     return int(hit or 0), max(int(miss or 0), 0)
 
 
+def _reasoning_tokens(usage: Any) -> int:
+    """从 usage 里挖思考模型的隐藏输出 token。
+
+    两家放的位置不一样：Chat Completions 系（OpenAI/DeepSeek/OpenRouter）
+    塞在 completion_tokens_details.reasoning_tokens；Codex Responses 系
+    塞在 output_tokens_details.reasoning_tokens。两处都试，取第一个非零。
+    """
+    for holder_name in ("completion_tokens_details", "output_tokens_details"):
+        details = getattr(usage, holder_name, None)
+        if details is not None:
+            val = getattr(details, "reasoning_tokens", None)
+            if val:
+                return int(val)
+    return 0
+
+
 async def stream_chat(
         cfg: Config,
         messages: list[dict[str, Any]],
@@ -136,6 +159,8 @@ async def stream_chat(
     slots: dict[int, dict[str, str]] = {}
     prompt_tokens = completion_tokens = total_tokens = 0
     cache_hit_tokens = cache_miss_tokens = 0
+    finish_reason = ""
+    reasoning_tokens = 0
     started = time.monotonic()
     first_token_ms = 0
 
@@ -148,10 +173,16 @@ async def stream_chat(
                 completion_tokens = getattr(chunk_usage, "completion_tokens", 0) or completion_tokens
                 total_tokens = getattr(chunk_usage, "total_tokens", 0) or total_tokens
                 cache_hit_tokens, cache_miss_tokens = _cache_fields(chunk_usage)
+                reasoning_tokens = _reasoning_tokens(chunk_usage) or reasoning_tokens
 
             choice = getattr(chunk, "choices", None)
             if not choice:
                 continue
+            # 最后一个 chunk 会带 finish_reason（stop/tool_calls/length），
+            # 前面的是 None——所以直接覆盖，留最后非空的
+            chunk_finish = getattr(choice[0], "finish_reason", None)
+            if chunk_finish:
+                finish_reason = str(chunk_finish)
             delta = getattr(choice[0], "delta", None)
             if delta is None:
                 continue
@@ -201,6 +232,8 @@ async def stream_chat(
             cache_miss_tokens=cache_miss_tokens,
             duration_ms=int((time.monotonic() - started) * 1000),
             first_token_ms=first_token_ms,
+            finish_reason=finish_reason,
+            reasoning_tokens=reasoning_tokens,
         ),
     )
 

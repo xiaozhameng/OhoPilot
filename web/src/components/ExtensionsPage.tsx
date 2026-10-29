@@ -219,9 +219,6 @@ export function ExtensionsPage() {
           <h1 className="console__title">扩展中心</h1>
           <p className="console__sub">给 agent 加本事：技能（提示词能力）与 MCP（外部工具）</p>
         </div>
-        <a className="pill pill--link" href="/">
-          ← 返回工作台
-        </a>
       </header>
 
       <div className="ext__tabs">

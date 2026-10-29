@@ -1,3 +1,4 @@
+import { Link } from "../router";
 import type { Health } from "../types";
 import { IconChart, IconMenu, IconSettings } from "./Icons";
 
@@ -40,13 +41,11 @@ export function Topbar({
             </span>
           </>
         )}
-        {/* 新标签打开：控制台是「挂着不关的总账页」，跳走再跳回来会丢浏览位置 */}
-        <a className="pill pill--link" href="/console" target="_blank" rel="noreferrer" title="开发者控制台（跨会话总账）">
+        {/* 同窗口切到控制台（客户端路由，不刷新）：整页刷新会打断正在跑的回答。
+            扩展中心已并入控制台后台（技能与 MCP 是侧栏里的一页），只留一个入口 */}
+        <Link className="pill pill--link" to="/console" title="控制台：用量分析 + 技能与 MCP">
           控制台
-        </a>
-        <a className="pill pill--link" href="/extensions" target="_blank" rel="noreferrer" title="扩展中心：技能与 MCP 管理">
-          扩展
-        </a>
+        </Link>
         <button className="icon-btn" onClick={onOpenUsage} title="Token 用量（开发者面板）">
           <IconChart size={15} />
         </button>

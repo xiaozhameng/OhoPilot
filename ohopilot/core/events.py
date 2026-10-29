@@ -30,8 +30,12 @@ class Event:
 def text(delta: str) -> Event:
     return Event("text", {"delta": delta})
 
-def tool_call(call_id: str, name: str, arguments: dict[str, Any]) -> Event:
-    return Event("tool_call", {"id": call_id, "name": name, "arguments": arguments})
+def tool_call(
+    call_id: str, name: str, arguments: dict[str, Any], round_no: int = 0
+) -> Event:
+    return Event(
+        "tool_call", {"id": call_id, "name": name, "arguments": arguments, "round_no": round_no}
+    )
 
 def tool_result(
     call_id: str,
@@ -39,9 +43,11 @@ def tool_result(
     content: str,
     is_error: bool = False,
     duration_ms: int | None = None,
+    round_no: int = 0,
 ) -> Event:
     # duration_ms 给控制台记耗时用；未知工具/用户拒绝这类"没真正执行"的
     # 分支保持 None，统计平均耗时时不掺噪声。
+    # round_no 是轮次树的挂载点：控制台按它把工具调用归到「第几轮」。
     return Event(
         "tool_result",
         {
@@ -50,14 +56,33 @@ def tool_result(
             "content": content,
             "is_error": is_error,
             "duration_ms": duration_ms,
+            "round_no": round_no,
         },
     )
 
-def approval_request(call_id: str, name: str, arguments: dict[str, Any], reason: str) -> Event:
-    return Event(
-        "approval_request",
-        {"id": call_id, "name": name, "arguments": arguments, "reason": reason},
-    )
+def approval_request(
+    call_id: str,
+    name: str,
+    arguments: dict[str, Any],
+    reason: str,
+    options: list[dict[str, Any]] | None = None,
+) -> Event:
+    """请求人工确认。
+
+    options 是「允许时可以选的范围」：[{kind: once|file|dir, label, path}]。
+    界面按它渲染按钮（仅本次 / 这个目录 / 上两级目录），用户选中的那条
+    随审批结果一起回来，由工具落成白名单规则。
+    不带 options = 只给允许/拒绝，和以前一样。
+    """
+    data: dict[str, Any] = {
+        "id": call_id,
+        "name": name,
+        "arguments": arguments,
+        "reason": reason,
+    }
+    if options:
+        data["options"] = options
+    return Event("approval_request", data)
 
 def usage(
     prompt_tokens: int,
@@ -69,6 +94,11 @@ def usage(
     duration_ms: int = 0,
     first_token_ms: int = 0,
     context: dict[str, int] | None = None,
+    finish_reason: str = "",
+    reasoning_tokens: int = 0,
+    req_messages: int = 0,
+    req_tools: int = 0,
+    req_snapshot: str | None = None,
 ) -> Event:
     """一轮模型调用的用量。
 
@@ -77,6 +107,12 @@ def usage(
     context 是发出这次请求时各类内容占的字符数（system / history /
     question / tool_results）——token 数模型只给总数，"花在哪"只能靠
     字符数占比近似归因，但足够定位"是大模型话多还是工具结果太肥"。
+    finish_reason 区分 stop / tool_calls / length：被截断的请求
+    （length）表现为"回答莫名少半截"，不记下来永远查不到原因。
+    reasoning_tokens 是思考模型的隐藏输出（DeepSeek-R1 / o 系列），
+    混在 completion 里会让"输出为什么这么贵"无从解释。
+    req_* 是请求侧摘要；req_snapshot 是请求体快照（已截断的 messages
+    JSON 字符串），只在落库用，不进 SSE——对话内容不该广播给界面。
     """
     data: dict[str, Any] = {
         "prompt_tokens": prompt_tokens,
@@ -87,9 +123,15 @@ def usage(
         "cache_miss_tokens": cache_miss_tokens,
         "duration_ms": duration_ms,
         "first_token_ms": first_token_ms,
+        "finish_reason": finish_reason,
+        "reasoning_tokens": reasoning_tokens,
+        "req_messages": req_messages,
+        "req_tools": req_tools,
     }
     if context is not None:
         data["context"] = context
+    if req_snapshot is not None:
+        data["req_snapshot"] = req_snapshot
     return Event("usage", data)
 
 def todo(items: list[dict[str, Any]]) -> Event:

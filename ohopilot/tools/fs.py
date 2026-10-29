@@ -1,17 +1,21 @@
 """文件工具：读、写、列目录、搜索。
 
-工作根目录是"安全边界"——写操作分四层防线：
+工作根目录是"默认范围"，写操作分四层防线：
 0. 配置总开关（OHOPILOT_ALLOW_WRITE=0 时一律不落盘）；
-1. 路径越出工作目录 → run() 里直接拒绝；
-2. 命中硬禁止清单（.env / .git）→ run() 里直接拒绝，不给审批机会；
-3. 工作目录内的写操作 → requires_approval=True，走人工审批。
+1. 超出工作目录/数据家目录的写 → 需要人工审批；审批时可以把目标目录
+   加入白名单（grants.json），之后这个目录内不再逐次询问；
+2. 命中硬禁止清单（.env / .git）→ 直接拒绝，不给审批机会；
+3. 其余写操作 → requires_approval=True，走人工审批。
+
+注意第 2 条永远优先于白名单：授权一整个目录也不会放行里面的 .env。
 """
 import os
 from pathlib import Path
 from typing import Any
 
 from ohopilot.config import Config
-from ohopilot.tools.base import Tool, ToolResult
+from ohopilot.tools.base import ApprovalScope, Tool, ToolResult
+from ohopilot.tools.grants import GrantStore, scope_options
 
 MAX_READ_BYTES = 200_000
 
@@ -35,9 +39,20 @@ class _FsTool(Tool):
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
+        # 每个实例各持一个 GrantStore：它每次判断都重读文件，
+        # 所以 shell 那边刚加的规则，文件工具这一步立刻能看见
+        self.grants = GrantStore(cfg.home)
 
     def _is_protected(self, path: Path) -> bool:
         return any(part in self.PROTECTED for part in path.parts)
+
+    def _scope_options(
+        self, target: Path, levels: int = 3, only_once: bool = False
+    ) -> list[ApprovalScope]:
+        """写文件时的候选授权目录：文件所在目录 + 往上 N 级。"""
+        if only_once:
+            return [ApprovalScope("once", "仅本次")]
+        return scope_options(target.parent, self.cfg.home, levels)
 
     def _resolve(self, raw: str) -> tuple[Path, bool]:
         """把用户给的路径变成绝对路径，并判断是否在工作根目录内。"""
@@ -134,6 +149,42 @@ class WriteFileTool(_FsTool):
     #: 声明为危险操作：_execute() 会为它发 approval_request 事件
     requires_approval = True
 
+    def needs_approval(self, arguments: dict[str, Any]) -> tuple[bool, str]:
+        """按目标路径决定要不要问人。
+
+        三种情况不问：
+          - 总开关关了（run 会直接拒绝，问也没用）；
+          - 命中 .env/.git（run 会直接拒绝，不给审批机会）；
+          - 这个路径已经被白名单覆盖了。
+        其余一律问。工作目录内问，是因为"覆盖已有文件"本身可能是误操作；
+        工作目录外问，是因为那里是用户自己的地盘。
+        """
+        if not self.cfg.allow_write:
+            return False, ""
+        target, inside = self._resolve(str(arguments.get("path", "")))
+        if self._is_protected(target):
+            return False, ""
+        if self.grants.covers(self.name, target):
+            return False, ""
+        if inside or self._is_under(target, self.cfg.home):
+            return True, "该操作可能修改你的电脑"
+        return True, (
+            f"目标在工作目录之外：{target}\n"
+            "可以只允许这一次，也可以把这个目录加入白名单，"
+            "之后该目录内的写入不再逐次询问。"
+        )
+
+    def approval_options(self, arguments: dict[str, Any]) -> list[ApprovalScope]:
+        target, _ = self._resolve(str(arguments.get("path", "")))
+        return self._scope_options(target)
+
+    def apply_grant(self, kind: str, path: str) -> str:
+        if kind not in {"file", "dir"} or not path:
+            return ""
+        grant = self.grants.add(self.name, path, kind, label=Path(path).name)
+        scope = "仅这一个文件" if kind == "file" else "这个目录及其子目录"
+        return f"已加入白名单：{grant.path}（{scope}）——撤销请到控制台 → 工具 → 目录白名单"
+
     async def run(self, path: str, content: str = "", **_: Any) -> ToolResult:
         # 防线零：总开关。只想让它读、不许它写的时候，一次都不该落盘
         if not self.cfg.allow_write:
@@ -144,14 +195,15 @@ class WriteFileTool(_FsTool):
         target, inside = self._resolve(path)
         home_inside = self._is_under(target, self.cfg.home)
 
-        # 防线一：硬边界。只许写工作目录和数据家目录两个根之内。
-        # 家目录是 agent 自己的地盘，写它不碰用户其他文件——放行；
-        # 除此之外的任何位置（桌面、文档、其他仓库）一律拒绝。
-        if not inside and not home_inside:
+        # 防线一：默认范围之外要有授权。
+        # 注意这里查的是白名单而不是"刚点过允许"——点「仅本次」不会留下规则，
+        # 所以每写一个新文件都会再问一次，直到用户授权某个目录为止。
+        if not inside and not home_inside and not self.grants.covers(self.name, target):
             return ToolResult.fail(
-                f"路径超出可写范围，已拒绝：{target}\n"
-                f"写操作只允许在工作目录（{self.cfg.workspace}）"
-                f"或 OhoPilot 数据家目录（{self.cfg.home}）内进行。"
+                f"需要授权才能写这个位置：{target}\n"
+                f"默认可写范围是工作目录（{self.cfg.workspace}）"
+                f"和数据家目录（{self.cfg.home}）。"
+                "如果刚才弹过审批而用户选了「拒绝」，就是这里的结果。"
             )
 
         # 防线二：硬禁止清单。.env/.git 任何位置都禁；

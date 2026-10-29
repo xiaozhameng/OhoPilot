@@ -1,25 +1,21 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
-import { ConsolePage } from "./components/ConsolePage";
-import { ExtensionsPage } from "./components/ExtensionsPage";
 import "./styles.css";
+
+/**
+ * 整个应用就是一个视图：侧栏常驻，main 区在「聊天」和「控制台面板」之间切换
+ * （切换逻辑在 App 里，由 router.tsx 的 useRoute 驱动）。
+ *
+ * 服务端把 /console、/extensions 也指向这份 index.html，所以直接打开
+ * /console/xxx 刷新也是同一个入口——App 按地址直接渲染出控制台面板。
+ */
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html 里缺少 #root");
 
-// 同一个 SPA 的三个入口（服务端把 /console、/extensions 也指向这份 index.html）：
-// 主工作台管「这一次对话」，控制台管「开发者的总账」，扩展中心管「agent 的能力配置」。
-const path = window.location.pathname;
-
 createRoot(root).render(
   <StrictMode>
-    {path.startsWith("/console") ? (
-      <ConsolePage />
-    ) : path.startsWith("/extensions") ? (
-      <ExtensionsPage />
-    ) : (
-      <App />
-    )}
+    <App />
   </StrictMode>,
 );

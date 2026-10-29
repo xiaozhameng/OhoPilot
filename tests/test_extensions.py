@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -235,3 +236,296 @@ async def test_mcp_读写删除全回路(server):
     resp = await server.client.delete("/mcp/servers/fetch")
     assert resp.status_code == 200
     assert (await server.client.get("/mcp")).json()["servers"] == {}
+
+
+# ---------- 第 31 步：控制台分析化二期（缓存桶/轮次树/请求快照） ----------
+
+
+def test_老库自动迁移出缓存与轮次列(tmp_path):
+    """llm_calls 老库没有 finish_reason/req_* 列，tool_calls 没有 round_no——打开即补。"""
+    db_path = tmp_path / "old2.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE llm_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "session_id TEXT NOT NULL, created_at TEXT NOT NULL, round_no INTEGER NOT NULL DEFAULT 0, "
+        "model TEXT NOT NULL DEFAULT '', prompt_tokens INTEGER NOT NULL DEFAULT 0, "
+        "cache_hit_tokens INTEGER NOT NULL DEFAULT 0, cache_miss_tokens INTEGER NOT NULL DEFAULT 0, "
+        "completion_tokens INTEGER NOT NULL DEFAULT 0, total_tokens INTEGER NOT NULL DEFAULT 0, "
+        "duration_ms INTEGER NOT NULL DEFAULT 0, first_token_ms INTEGER NOT NULL DEFAULT 0, "
+        "ctx_system INTEGER NOT NULL DEFAULT 0, ctx_history INTEGER NOT NULL DEFAULT 0, "
+        "ctx_question INTEGER NOT NULL DEFAULT 0, ctx_tool_results INTEGER NOT NULL DEFAULT 0)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = SessionStore(db_path)
+    llm_cols = {r[1] for r in store._conn.execute("PRAGMA table_info(llm_calls)").fetchall()}
+    assert {"finish_reason", "reasoning_tokens", "req_messages", "req_tools", "req_snapshot"} <= llm_cols
+    tool_cols = {r[1] for r in store._conn.execute("PRAGMA table_info(tool_calls)").fetchall()}
+    assert "round_no" in tool_cols
+
+
+def test_轮次与快照落库后能完整读回(tmp_path):
+    store = _make_db(tmp_path)
+    snapshot = '[{"role":"user","content":"你好"}]'
+    store.record_llm_call(
+        "s1", round_no=2, model="m", prompt_tokens=100, cache_hit_tokens=60,
+        cache_miss_tokens=40, completion_tokens=20, total_tokens=120,
+        duration_ms=500, first_token_ms=200, context={"system": 10},
+        finish_reason="tool_calls", reasoning_tokens=7, req_messages=5, req_tools=15,
+        req_snapshot=snapshot,
+    )
+    store.record_tool_call("s1", "web_fetch", False, duration_ms=120, round_no=2)
+
+    detail = store.session_detail("s1")
+    call = detail["llm_calls"][0]
+    assert call["finish_reason"] == "tool_calls"
+    assert call["reasoning_tokens"] == 7
+    assert call["req_messages"] == 5
+    assert call["req_tools"] == 15
+    assert detail["tool_calls"][0]["round_no"] == 2
+
+    # 快照按 call id 单独取
+    snap = store.llm_call_snapshot(call["id"])
+    assert snap is not None
+    assert snap["snapshot"] == [{"role": "user", "content": "你好"}]
+    # 不存在的 id → None（接口层转 404）
+    assert store.llm_call_snapshot(99999) is None
+
+
+def test_快照截断时保留头尾且仍是合法JSON(tmp_path):
+    """超 4KB 的请求体：信封 {"truncated":true,"head","tail"}，解析侧永不拿到半截 JSON。"""
+    store = _make_db(tmp_path)
+    from ohopilot.core.agent import _request_snapshot
+
+    long_snapshot = _request_snapshot([{"role": "user", "content": "x" * 10000}])
+    assert len(long_snapshot) <= 4096 + 100  # 信封本身也有开销
+    parsed = json.loads(long_snapshot)
+    assert parsed["truncated"] is True
+    assert parsed["head"] and parsed["tail"]
+    # 短请求原样存，不套信封
+    short = _request_snapshot([{"role": "user", "content": "hi"}])
+    assert json.loads(short) == [{"role": "user", "content": "hi"}]
+
+    store.record_llm_call(
+        "s1", round_no=1, model="m", prompt_tokens=1, cache_hit_tokens=0,
+        cache_miss_tokens=1, completion_tokens=1, total_tokens=2,
+        duration_ms=1, first_token_ms=1, req_snapshot=long_snapshot,
+    )
+    snap = store.llm_call_snapshot(1)
+    assert snap is not None and snap["snapshot"]["truncated"] is True
+
+
+async def test_控制台新端点_流水与快照(server):
+    """新端点走真实 ASGI 链：流水列表、单条快照、404。"""
+    store = server.rt.store
+    store.record_llm_call(
+        "sess1", round_no=1, model="m", prompt_tokens=10, cache_hit_tokens=5,
+        cache_miss_tokens=5, completion_tokens=3, total_tokens=13,
+        duration_ms=100, first_token_ms=50, finish_reason="stop",
+        req_messages=2, req_tools=10, req_snapshot='[{"role":"user"}]',
+    )
+    store.record_tool_call("sess1", "fs_read", False, duration_ms=9, round_no=1)
+
+    resp = await server.client.get("/console/api/calls?limit=10")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["calls"][0]["finish_reason"] == "stop"
+    assert body["calls"][0]["round_no"] == 1
+
+    call_id = body["calls"][0]["id"]
+    resp = await server.client.get(f"/console/api/llm-calls/{call_id}")
+    assert resp.status_code == 200
+    assert resp.json()["snapshot"] == [{"role": "user"}]
+
+    assert (await server.client.get("/console/api/llm-calls/424242")).status_code == 404
+
+
+async def test_会话下钻带轮次_总览带缓存拆分(server):
+    store = server.rt.store
+    store.record_llm_call(
+        "sess2", round_no=3, model="m", prompt_tokens=50, cache_hit_tokens=30,
+        cache_miss_tokens=20, completion_tokens=10, total_tokens=60,
+        duration_ms=80, first_token_ms=40, reasoning_tokens=4,
+    )
+    detail = (await server.client.get("/console/api/sessions/sess2")).json()
+    assert detail["llm_calls"][0]["round_no"] == 3
+    assert detail["llm_calls"][0]["cache_hit_tokens"] == 30
+
+    overview = (await server.client.get("/console/api/overview")).json()
+    model_row = next(m for m in overview["by_model"] if m["model"] == "m")
+    assert model_row["cache_hit_tokens"] == 30
+    assert model_row["reasoning_tokens"] == 4
+    session_row = next(s for s in overview["by_session"] if s["session_id"] == "sess2")
+    assert session_row["tool_calls"] == 0
+
+
+# ---------- 第 32 步：会话别名 + 目录白名单接口 ----------
+
+async def test_改名接口_落库并回显(server):
+    server.rt.store.append("s-abc", "user", "原始问题")
+
+    resp = await server.client.patch(
+        "/console/api/sessions/s-abc", json={"alias": " 桌面整理 ", "content": ""}
+    )
+
+    assert resp.status_code == 200
+    # 第 34 步后响应多带 space_id（没传就是 None，表示"不动归属"）
+    assert resp.json() == {"session_id": "s-abc", "alias": "桌面整理", "space_id": None}
+    # 列表接口也要带出来，否则前端只能靠详情页才知道名字
+    listed = (await server.client.get("/sessions")).json()["sessions"][0]
+    assert listed["alias"] == "桌面整理"
+    assert listed["created_at"]
+
+
+async def test_给不存在的会话改名返回_404(server):
+    resp = await server.client.patch("/console/api/sessions/nope", json={"alias": "x"})
+    assert resp.status_code == 404
+
+
+async def test_白名单可列出可撤销(server):
+    from ohopilot.tools.grants import GrantStore
+
+    store = GrantStore(server.rt.cfg.home)
+    grant = store.add("fs_write_file", server.rt.cfg.home / ".." / "桌面", "dir")
+
+    body = (await server.client.get("/console/api/grants")).json()
+    assert body["grants"][0]["id"] == grant.id
+    assert body["grants"][0]["kind"] == "dir"
+
+    assert (await server.client.delete(f"/console/api/grants/{grant.id}")).status_code == 200
+    assert (await server.client.get("/console/api/grants")).json()["grants"] == []
+    # 撤第二次已经没有这条
+    assert (await server.client.delete(f"/console/api/grants/{grant.id}")).status_code == 404
+
+
+# ---------- 第 33 步：长期记忆接口 + 轮次用户消息摘要 ----------
+
+from ohopilot.memory.longterm import (
+    MAX_MEMORY_CHARS,
+    MAX_MEMORY_FILE_CHARS,
+    read_longterm_raw,
+    write_longterm_raw,
+)
+
+async def test_记忆接口_读写往返(server):
+    rt = server.rt
+    original = read_longterm_raw(rt.cfg)
+    try:
+        body = (await server.client.get("/console/api/memory")).json()
+        assert body["path"].endswith("MEMORY.md")
+        assert body["limit"] == MAX_MEMORY_CHARS
+
+        resp = await server.client.put(
+            "/console/api/memory",
+            json={"content": "# OhoPilot 长期记忆\n\n- 用户偏好深色主题\n> 这是注释\n"},
+        )
+        assert resp.status_code == 200
+
+        # 读回来：原文与写入一致；注入口径不含注释行
+        after = (await server.client.get("/console/api/memory")).json()
+        assert "用户偏好深色主题" in after["content"]
+        assert after["injected_chars"] < after["chars"]
+    finally:
+        # 记忆文件是用户真实数据家目录里的东西，测完必须还原
+        write_longterm_raw(rt.cfg, original)
+
+
+async def test_记忆写入超限返回422(server):
+    rt = server.rt
+    original = read_longterm_raw(rt.cfg)
+    try:
+        resp = await server.client.put(
+            "/console/api/memory", json={"content": "x" * (MAX_MEMORY_FILE_CHARS + 1)}
+        )
+        assert resp.status_code == 422
+    finally:
+        write_longterm_raw(rt.cfg, original)
+
+
+async def test_会话详情带每轮用户消息摘要(server):
+    """快照里最后一条 user 消息 = 这一轮的新问题，前端时间线要拿它讲故事。"""
+    store = server.rt.store
+    store.append("s-sum", "user", "帮我把桌面的报告合并\n第二行")
+    messages = [
+        {"role": "system", "content": "你是助手"},
+        {"role": "user", "content": "帮我把桌面的报告合并\n第二行"},
+    ]
+    store.record_llm_call(
+        "s-sum", round_no=1, model="m", prompt_tokens=1, cache_hit_tokens=0,
+        cache_miss_tokens=1, completion_tokens=1, total_tokens=2,
+        duration_ms=1, first_token_ms=1, req_messages=2, req_tools=0,
+        req_snapshot=json.dumps(messages, ensure_ascii=False),
+    )
+
+    detail = store.session_detail("s-sum")
+    call = detail["llm_calls"][0]
+    # 换行折叠成空格、截 160 字——前端一行放得下
+    assert call["last_user_text"] == "帮我把桌面的报告合并 第二行"
+
+
+async def test_截断信封的快照摘要为空(server):
+    """4KB 信封是两段残缺文本，从中猜用户消息不可靠——宁可空着让前端隐藏。"""
+    store = server.rt.store
+    envelope = json.dumps(
+        {"truncated": True, "head": '{"role":"user","conte', "tail": 'nt"}]}'}
+    )
+    store.record_llm_call(
+        "s-env", round_no=1, model="m", prompt_tokens=1, cache_hit_tokens=0,
+        cache_miss_tokens=1, completion_tokens=1, total_tokens=2,
+        duration_ms=1, first_token_ms=1, req_snapshot=envelope,
+    )
+    assert store.session_detail("s-env")["llm_calls"][0]["last_user_text"] == ""
+
+
+# ---------- 第 34 步：空间（会话分组） ----------
+
+async def test_空间可建可改可绑目录(server):
+    created = (
+        await server.client.post("/spaces", json={"name": "支付项目", "folder": "~/Desktop/pay"})
+    ).json()
+    assert created["id"] > 1
+    assert created["folder"] == "~/Desktop/pay"
+
+    renamed = (
+        await server.client.patch(f"/spaces/{created['id']}", json={"name": "支付二期", "folder": ""})
+    ).json()
+    assert renamed["name"] == "支付二期"
+    assert renamed["folder"] == ""  # 空串 = 解绑
+
+    listed = (await server.client.get("/spaces")).json()["spaces"]
+    assert listed[0]["name"] == "默认空间"  # 默认空间永远第一
+    assert any(s["id"] == created["id"] for s in listed)
+
+
+async def test_空间重名返回422(server):
+    await server.client.post("/spaces", json={"name": "重名测试"})
+    resp = await server.client.post("/spaces", json={"name": "重名测试"})
+    assert resp.status_code == 422
+
+
+async def test_默认空间删不掉(server):
+    resp = await server.client.delete("/spaces/1")
+    assert resp.status_code == 422
+
+
+async def test_删空间把会话退回默认空间(server):
+    space = (await server.client.post("/spaces", json={"name": "临时项目"})).json()
+    server.rt.store.append("s-move", "user", "问一句")
+    await server.client.patch(
+        "/console/api/sessions/s-move", json={"alias": "", "space_id": space["id"]}
+    )
+    assert (await server.client.get("/sessions")).json()["sessions"][0]["space_id"] == space["id"]
+
+    assert (await server.client.delete(f"/spaces/{space['id']}")).status_code == 200
+    # 会话没被删，只是回到默认空间
+    rows = (await server.client.get("/sessions")).json()["sessions"]
+    assert rows[0]["session_id"] == "s-move"
+    assert rows[0]["space_id"] == 1
+
+
+async def test_会话列表带空间号_老数据兜默认空间(server):
+    server.rt.store.append("s-legacy", "user", "老会话")
+    row = (await server.client.get("/sessions")).json()["sessions"][0]
+    assert row["session_id"] == "s-legacy"
+    assert row["space_id"] == 1

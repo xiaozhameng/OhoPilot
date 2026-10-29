@@ -20,6 +20,23 @@ _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 MAX_RESULT_CHARS = 12_000
 
+@dataclass(frozen=True)
+class ApprovalScope:
+    """审批时可以选的一个范围。
+
+    kind 只有三种：
+      - once：只这一次（不记任何规则）
+      - file：这一个文件
+      - dir ：这个目录及其子目录
+    工具自己生成候选项（它最清楚哪个路径有意义），agent 只负责把
+    用户选中的那条回传给工具落库——判断留在工具里，编排层不懂业务。
+    """
+
+    kind: str
+    label: str
+    path: str = ""
+
+
 @dataclass
 class ToolResult:
     content: str
@@ -63,6 +80,21 @@ class Tool(abc.ABC):
         if self.requires_approval:
             return True, "该操作可能修改你的电脑"
         return False, ""
+
+    def approval_options(self, arguments: dict[str, Any]) -> list[ApprovalScope]:
+        """可选审批范围（「仅本次 / 这个目录 / 上两级目录」）。
+
+        默认空列表 = 界面只给「允许/拒绝」。带路径语义的工具覆盖它，
+        用户就不用为同一个目录里的每个文件各点一次允许。
+        """
+        return []
+
+    def apply_grant(self, kind: str, path: str) -> str:
+        """记住用户选的范围，返回一句给界面看的提示（空串 = 什么都没记）。
+
+        落库由工具自己做：只有它知道自己的规则该记成什么形状。
+        """
+        return ""
 
 
     @abc.abstractmethod

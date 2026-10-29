@@ -16,32 +16,44 @@ from __future__ import annotations
 
 import asyncio
 
+from ohopilot.core.agent import ApprovalDecision
+
 
 class ApprovalBroker:
     def __init__(self, timeout: float = 180.0) -> None:
         self.timeout = timeout
         #: call_id → 等待中的 Future。多个会话可以各挂一个，互不干扰
-        self._pending: dict[str, asyncio.Future[bool]] = {}
+        self._pending: dict[str, asyncio.Future[ApprovalDecision]] = {}
 
-    async def approver(self, call_id: str, name: str, arguments: dict, reason: str) -> bool:
+    async def approver(
+        self, call_id: str, name: str, arguments: dict, reason: str
+    ) -> ApprovalDecision:
         """实现 agent.Approver 协议：挂起直到有人回答，或超时。"""
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[bool] = loop.create_future()
+        future: asyncio.Future[ApprovalDecision] = loop.create_future()
         self._pending[call_id] = future
         try:
             return await asyncio.wait_for(future, timeout=self.timeout)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             # 超时 = 没人管 = 拒绝；CancelledError 是客户端断开了 SSE，同样按拒绝
-            return False
+            return ApprovalDecision(allow=False)
         finally:
             self._pending.pop(call_id, None)
 
-    def resolve(self, call_id: str, allow: bool) -> bool:
-        """前端回话。返回是否真的有一个调用在等这个 id。"""
+    def resolve(
+        self, call_id: str, allow: bool, kind: str = "once", path: str = ""
+    ) -> bool:
+        """前端回话。返回是否真的有一个调用在等这个 id。
+
+        kind/path 是用户选中的授权范围（once/file/dir）。只允许时才有意义，
+        拒绝时忽略——拒绝不该顺手记住任何东西。
+        """
         future = self._pending.get(call_id)
         if future is None or future.done():
             return False
-        future.set_result(allow)
+        future.set_result(
+            ApprovalDecision(allow=allow, kind=kind if allow else "once", path=path)
+        )
         return True
 
     @property

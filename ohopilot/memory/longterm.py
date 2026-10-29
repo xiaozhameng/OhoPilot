@@ -15,6 +15,11 @@ from ohopilot.config import Config
 #: 长期记忆会跟着每一个请求一起发出去，没有上限等于每轮都在为它付 token。
 MAX_MEMORY_CHARS = 4_000
 
+#: 记忆文件本身的大小上限（控制台整文件编辑的保险丝）。
+#: 注入上限 4000 意味着超出部分根本不会被模型看到，写再多也是浪费；
+#: 100K 足够宽松，真到这个量级说明该整理记忆而不是继续追加。
+MAX_MEMORY_FILE_CHARS = 100_000
+
 
 def _is_note(line: str) -> bool:
     """以 `>` 开头的是写给人看的注释（文件的默认说明），不该进提示词。"""
@@ -79,3 +84,40 @@ def append_longterm(cfg: Config, text: str) -> int:
         fh.write(separator + line + "\n")
 
     return len(existing) + len(separator) + len(line) + 1
+
+
+def read_longterm_raw(cfg: Config) -> str:
+    """读记忆文件的原文（含注释和标题）。
+
+    控制台的编辑器要给人看：`>` 开头的注释行虽然是写给初期用户的说明，
+    藏着不展示反而让人困惑「为什么模型看到的和我看到的不一样」。
+    文件不存在时返回空串，让编辑器从一张白纸开始。
+    """
+    try:
+        return cfg.memory_file.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def write_longterm_raw(cfg: Config, text: str) -> int:
+    """整体覆写记忆文件，返回写入的字符数。
+
+    和 append 的分工：append 是 agent 运行时「记一条」，只加不改；
+    这里是人主动整理记忆——删掉过期的、合并重复的、改写措辞，
+    本质是编辑操作，必须整文件替换。
+
+    原子写（先写临时文件再改名）：写到一半崩溃或断电，
+    旧记忆还在，不会留下半个文件。
+    """
+    if len(text) > MAX_MEMORY_FILE_CHARS:
+        raise ValueError(
+            f"记忆内容 {len(text)} 字符，超过上限 {MAX_MEMORY_FILE_CHARS}；"
+            "长期记忆是少量精选事实，太长请做删减"
+        )
+
+    path = cfg.memory_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".md.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+    return len(text)

@@ -8,16 +8,21 @@
  */
 
 import type {
+  CallSnapshot,
   ConsoleOverview,
+  DirectoryGrant,
   Health,
   HistoryMessage,
+  LlmCallRow,
   McpServer,
+  MemoryFile,
   RawEvent,
   SessionDetail,
   SessionSummary,
   SkillCandidate,
   SkillInfo,
   SkillInstallResult,
+  Space,
   TodoItem,
   UsageCall,
   UsageSummary,
@@ -67,14 +72,120 @@ export async function fetchSessionTodos(sessionId: string): Promise<TodoItem[]> 
   return body.items;
 }
 
-export async function answerApproval(callId: string, allow: boolean): Promise<void> {
+/**
+ * 回传一次审批。
+ *
+ * kind/path 是用户选的授权范围：once=仅本次（默认，和以前一样），
+ * dir=这个目录以后都不问。传了 dir 就等于给 agent 记一条白名单，
+ * 所以按钮上的文案必须把目录写清楚。
+ */
+export async function answerApproval(
+  callId: string,
+  allow: boolean,
+  kind: "once" | "file" | "dir" = "once",
+  path = "",
+): Promise<void> {
   const resp = await fetch(`${BASE}/approvals/${encodeURIComponent(callId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allow }),
+    body: JSON.stringify({ allow, kind: allow ? kind : "once", path: allow ? path : "" }),
   });
   // 404 表示这次审批已经超时或被答过，不算致命错误：界面照旧收起卡片即可
   if (!resp.ok && resp.status !== 404) throw new Error(await readError(resp));
+}
+
+/** 改会话别名（空串 = 清空，回退到首句标题）。 */
+export async function renameSession(
+  sessionId: string,
+  alias: string,
+): Promise<{ session_id: string; alias: string }> {
+  const resp = await fetch(`${BASE}/console/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ alias }),
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as { session_id: string; alias: string };
+}
+
+/** 把会话挪到另一个空间。 */
+export async function moveSession(sessionId: string, spaceId: number): Promise<void> {
+  const resp = await fetch(`${BASE}/console/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ alias: "", space_id: spaceId }),
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+}
+
+// ---- 空间：会话分组 ----
+
+export async function fetchSpaces(): Promise<Space[]> {
+  const resp = await fetch(`${BASE}/spaces`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  const body = (await resp.json()) as { spaces: Space[] };
+  return body.spaces;
+}
+
+export async function createSpace(name: string, folder = ""): Promise<Space> {
+  const resp = await fetch(`${BASE}/spaces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, folder }),
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as Space;
+}
+
+/** 改名 / 绑目录。folder 传空串 = 解绑；name 传空串 = 不改名。 */
+export async function updateSpace(
+  spaceId: number,
+  patch: { name?: string; folder?: string },
+): Promise<Space> {
+  const resp = await fetch(`${BASE}/spaces/${spaceId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: patch.name ?? "", folder: patch.folder ?? "" }),
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as Space;
+}
+
+export async function deleteSpace(spaceId: number): Promise<void> {
+  const resp = await fetch(`${BASE}/spaces/${spaceId}`, { method: "DELETE" });
+  if (!resp.ok) throw new Error(await readError(resp));
+}
+
+/** 目录白名单。file 是落盘位置，方便用户想手改时能找到。 */
+export async function fetchGrants(): Promise<{ file: string; grants: DirectoryGrant[] }> {
+  const resp = await fetch(`${BASE}/console/api/grants`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as { file: string; grants: DirectoryGrant[] };
+}
+
+export async function deleteGrant(grantId: string): Promise<void> {
+  const resp = await fetch(`${BASE}/console/api/grants/${encodeURIComponent(grantId)}`, {
+    method: "DELETE",
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+}
+
+// ---- 长期记忆（控制台「记忆」页）----
+
+export async function fetchMemory(): Promise<MemoryFile> {
+  const resp = await fetch(`${BASE}/console/api/memory`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as MemoryFile;
+}
+
+export async function saveMemory(content: string): Promise<MemoryFile> {
+  const resp = await fetch(`${BASE}/console/api/memory`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as MemoryFile;
 }
 
 /** 上传文件到服务端 uploads/，返回工作目录内的相对路径。 */
@@ -110,15 +221,33 @@ export async function fetchUsage(
 }
 
 export async function fetchConsoleOverview(): Promise<ConsoleOverview> {
-  const resp = await fetch(`${BASE}/console/overview`);
+  const resp = await fetch(`${BASE}/console/api/overview`);
   if (!resp.ok) throw new Error(await readError(resp));
   return (await resp.json()) as ConsoleOverview;
 }
 
 export async function fetchConsoleSession(sessionId: string): Promise<SessionDetail> {
-  const resp = await fetch(`${BASE}/console/sessions/${encodeURIComponent(sessionId)}`);
+  const resp = await fetch(`${BASE}/console/api/sessions/${encodeURIComponent(sessionId)}`);
   if (!resp.ok) throw new Error(await readError(resp));
   return (await resp.json()) as SessionDetail;
+}
+
+export async function fetchConsoleCalls(
+  limit = 100,
+  sessionId?: string,
+): Promise<LlmCallRow[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (sessionId) params.set("session_id", sessionId);
+  const resp = await fetch(`${BASE}/console/api/calls?${params.toString()}`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  const body = (await resp.json()) as { calls: LlmCallRow[] };
+  return body.calls;
+}
+
+export async function fetchCallSnapshot(callId: number): Promise<CallSnapshot> {
+  const resp = await fetch(`${BASE}/console/api/llm-calls/${callId}`);
+  if (!resp.ok) throw new Error(await readError(resp));
+  return (await resp.json()) as CallSnapshot;
 }
 
 // ---- 扩展中心（使用者视角）：技能 + MCP ----
@@ -201,6 +330,8 @@ export async function deleteMcpServer(name: string): Promise<void> {
 export interface AskOptions {
   message: string;
   sessionId: string | null;
+  /** 新会话归到哪个空间（只在 sessionId 为空时生效） */
+  spaceId?: number;
   onEvent: (event: RawEvent) => void;
   /** 拿到响应头就会回调一次：新会话的 id 只在响应头里（body 是流，没法等它结束再取） */
   onSession: (sessionId: string) => void;
@@ -214,12 +345,12 @@ export interface AskOptions {
  * 出错时抛异常，由调用方转成界面上的错误块——不在这里直接写 DOM。
  */
 export async function ask(options: AskOptions): Promise<void> {
-  const { message, sessionId, onEvent, onSession, signal } = options;
+  const { message, sessionId, spaceId, onEvent, onSession, signal } = options;
 
   const resp = await fetch(`${BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify({ message, session_id: sessionId, space_id: spaceId ?? null }),
     signal,
   });
 

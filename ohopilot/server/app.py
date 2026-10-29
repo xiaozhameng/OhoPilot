@@ -20,7 +20,7 @@ import re
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,12 +31,20 @@ from pydantic import BaseModel, Field
 from ohopilot.config import Config
 from ohopilot.core import events as ev
 from ohopilot.core.llm import has_credentials
+from ohopilot.memory.longterm import (
+    MAX_MEMORY_CHARS,
+    MAX_MEMORY_FILE_CHARS,
+    load_longterm,
+    read_longterm_raw,
+    write_longterm_raw,
+)
 from ohopilot.mcp.client import load_mcp_config
 from ohopilot.runtime import Runtime
 from ohopilot.server.approvals import ApprovalBroker
 from ohopilot.skills.discovery import discover_repo_skills
 from ohopilot.skills.installer import install_skill
 from ohopilot.skills.loader import load_skills
+from ohopilot.tools.grants import GrantStore
 
 #: 前端构建产物（web/ 里 npm run build 会输出到这里）
 STATIC_DIR = Path(__file__).parent / "static"
@@ -68,10 +76,36 @@ async def lifespan(app: FastAPI):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, description="用户这一轮的问题")
     session_id: str | None = Field(default=None, description="不传就开新会话")
+    #: 新会话归到哪个空间（不传 = 默认空间）。老会话已经归过空间，这里被忽略。
+    space_id: int | None = Field(default=None, description="新会话所属空间")
 
 
 class ApprovalAnswer(BaseModel):
     allow: bool
+    #: 授权的范围：once=仅本次，file=这个文件，dir=这个目录及子目录。
+    #: 只有 allow=true 时才有意义——拒绝不该顺手记住任何规则。
+    kind: Literal["once", "file", "dir"] = "once"
+    path: str = Field(default="", description="kind=file/dir 时的绝对路径")
+
+
+class AliasBody(BaseModel):
+    """会话元信息：别名 + （可选）归属空间。两者都是展示层的事。"""
+
+    alias: str = Field(default="", max_length=80)
+    space_id: int | None = None
+
+
+class SpaceBody(BaseModel):
+    """新建/修改空间。folder 是可选的本地目录路径（元数据）。"""
+
+    name: str = Field(default="", max_length=60)
+    folder: str = Field(default="", max_length=400)
+
+
+class MemoryBody(BaseModel):
+    """长期记忆的整文件覆写。长度校验交给 write_longterm_raw（给 422 带可读理由）。"""
+
+    content: str
 
 
 class SettingsBody(BaseModel):
@@ -163,9 +197,51 @@ def create_app() -> FastAPI:
         return _health(rt, request.app.state.broker)
 
     @app.get("/sessions")
-    async def list_sessions(request: Request, limit: int = 20) -> dict[str, Any]:
+    async def list_sessions(request: Request, limit: int = 200) -> dict[str, Any]:
+        """会话列表（带别名、时间、条数、所属空间）。侧栏按空间分组就靠它。"""
         rt: Runtime = request.app.state.rt
-        return {"sessions": rt.store.recent_sessions(limit)}
+        return {"sessions": rt.store.recent_sessions(min(limit, 500))}
+
+    @app.get("/spaces")
+    async def list_spaces(request: Request) -> dict[str, Any]:
+        """空间列表（含各自会话数）。默认空间永远在第一位。"""
+        rt: Runtime = request.app.state.rt
+        return {"spaces": rt.store.list_spaces()}
+
+    @app.post("/spaces")
+    async def create_space(body: SpaceBody, request: Request) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        try:
+            return rt.store.create_space(body.name, body.folder)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.patch("/spaces/{space_id}")
+    async def patch_space(space_id: int, body: SpaceBody, request: Request) -> dict[str, Any]:
+        """改名或绑定目录。注意 name 传空串表示"不改"，不是"改成空名"。"""
+        rt: Runtime = request.app.state.rt
+        try:
+            return rt.store.update_space(
+                space_id,
+                name=body.name or None,
+                folder=body.folder,  # 空串 = 解绑
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete("/spaces/{space_id}")
+    async def remove_space(space_id: int, request: Request) -> dict[str, Any]:
+        """删空间：里面的会话退回默认空间，不删会话。"""
+        rt: Runtime = request.app.state.rt
+        try:
+            rt.store.delete_space(space_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"deleted": space_id, "moved_to": rt.store.DEFAULT_SPACE_ID}
 
     @app.get("/sessions/{session_id}")
     async def session_detail(session_id: str, request: Request) -> dict[str, Any]:
@@ -236,20 +312,121 @@ def create_app() -> FastAPI:
         }
 
     # ---- 开发者控制台（第 26 步）----
-    # 接口按 /console/* 分组：单用户阶段不做鉴权，将来拆独立服务时
+    # 接口按 /console/api/* 分组（api 前缀是为了和页面路径 /console/calls 等
+    # 区分开：页面导航和 API 同名会撞路由，浏览器直接收到 JSON）。单用户阶段
+    # 不做鉴权，将来拆独立服务时
     # 这组前缀整体迁走即可，主界面接口一行不用动（用户拍板的预留边界）。
 
-    @app.get("/console/overview")
+    @app.get("/console/api/overview")
     async def console_overview(request: Request) -> dict[str, Any]:
         """跨会话聚合：token 总账 / 按模型拆分 / 工具排行 / 每会话成本 / 趋势 / 失败样本。"""
         rt: Runtime = request.app.state.rt
         return rt.store.console_overview()
 
-    @app.get("/console/sessions/{session_id}")
+    @app.get("/console/api/sessions/{session_id}")
     async def console_session(session_id: str, request: Request) -> dict[str, Any]:
-        """控制台点开单个会话的下钻明细：逐轮模型调用 + 逐次工具调用。"""
+        """控制台点开单个会话的下钻明细：逐轮模型调用 + 逐次工具调用（带轮次）。"""
         rt: Runtime = request.app.state.rt
         return rt.store.session_detail(session_id)
+
+    @app.patch("/console/api/sessions/{session_id}")
+    async def console_rename_session(
+        session_id: str, body: AliasBody, request: Request
+    ) -> dict[str, Any]:
+        """改会话别名 / 移动会话到另一个空间。都只动元信息，不碰 messages。"""
+        rt: Runtime = request.app.state.rt
+        if not rt.store.session_meta(session_id)["messages"]:
+            raise HTTPException(status_code=404, detail=f"会话不存在：{session_id}")
+        alias = rt.store.set_alias(session_id, body.alias)
+        space_id = body.space_id
+        if space_id is not None:
+            try:
+                rt.store.set_session_space(session_id, space_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"session_id": session_id, "alias": alias, "space_id": space_id}
+
+    @app.get("/console/api/grants")
+    async def console_grants(request: Request) -> dict[str, Any]:
+        """目录白名单：谁被放行了、在哪个目录、什么时候加的。
+
+        必须给界面看：静默放行是安全事故的温床——用户得能一眼看到
+        "agent 现在可以随便写哪里"，并且一键撤销。
+        """
+        rt: Runtime = request.app.state.rt
+        store = GrantStore(rt.cfg.home)
+        return {
+            "file": str(store.file),
+            "grants": [g.to_dict() for g in store.list()],
+        }
+
+    @app.delete("/console/api/grants/{grant_id}")
+    async def console_delete_grant(grant_id: str, request: Request) -> dict[str, Any]:
+        rt: Runtime = request.app.state.rt
+        if not GrantStore(rt.cfg.home).remove(grant_id):
+            raise HTTPException(status_code=404, detail=f"没有这条白名单：{grant_id}")
+        return {"deleted": grant_id}
+
+    @app.get("/console/api/memory")
+    async def console_get_memory(request: Request) -> dict[str, Any]:
+        """长期记忆原文 + 注入规则，给控制台的「记忆」页。
+
+        返回的是文件原文（含 > 注释行）：编辑器里看到的和落盘的一致，
+        不然用户改完保存，文件里却多出/少了几行，无从对账。
+        injected_chars 是按注入规则（去注释、截 4000）实际会发给模型的部分，
+        两个数并排，用户才知道"我写的这些模型到底看得到多少"。
+        """
+        rt: Runtime = request.app.state.rt
+        content = read_longterm_raw(rt.cfg)
+        injected = load_longterm(rt.cfg)
+        return {
+            "path": str(rt.cfg.memory_file),
+            "content": content,
+            "chars": len(content),
+            "injected_chars": len(injected),
+            "limit": MAX_MEMORY_CHARS,
+            "file_limit": MAX_MEMORY_FILE_CHARS,
+        }
+
+    @app.put("/console/api/memory")
+    async def console_put_memory(body: MemoryBody, request: Request) -> dict[str, Any]:
+        """整体覆写长期记忆。这是人工整理（删/并/改写），和 agent 的追加互补。"""
+        rt: Runtime = request.app.state.rt
+        try:
+            chars = write_longterm_raw(rt.cfg, body.content)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        injected = load_longterm(rt.cfg)
+        return {
+            "path": str(rt.cfg.memory_file),
+            "chars": chars,
+            "injected_chars": len(injected),
+        }
+
+    @app.get("/console/api/calls")
+    async def console_calls(
+        request: Request, limit: int = 100, session_id: str | None = None
+    ) -> dict[str, Any]:
+        """模型调用流水（最新在前），全局或按会话过滤。
+
+        独立成一个接口而不是塞进 overview：流水会一直涨，总账是聚合值
+        不会涨，两者缓存策略和刷新频率完全不同，混在一起每次都白拉全量。
+        """
+        rt: Runtime = request.app.state.rt
+        return {"calls": rt.store.llm_calls(session_id, limit=min(limit, 500))}
+
+    @app.get("/console/api/llm-calls/{call_id}")
+    async def console_call_detail(call_id: int, request: Request) -> dict[str, Any]:
+        """单次模型调用的请求快照（截 4KB 的 messages JSON）。
+
+        列表和树都不带快照——一条 4KB，塞在列表里既慢又刷屏；
+        用户点「看请求原文」时才按需拉这一条。
+        """
+        rt: Runtime = request.app.state.rt
+        detail = rt.store.llm_call_snapshot(call_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="调用记录不存在")
+        return detail
 
     # ---- 扩展中心（使用者视角）：技能 + MCP 的可视化管理 ----
     # 和 /console/*（开发者看数据）分开：这里改的是「agent 能干什么」的配置。
@@ -387,7 +564,15 @@ def create_app() -> FastAPI:
         question = body.message.strip()
         if not question:
             raise HTTPException(status_code=422, detail="message 不能为空白")
+        new_session = body.session_id is None
         session_id = body.session_id or rt.new_session()
+        # 只有新会话才认 space_id：老会话搬空间是显式操作（PATCH），
+        # 不能因为浏览器还记着上次选的空间就把历史会话偷偷搬走
+        if new_session and body.space_id:
+            try:
+                rt.store.set_session_space(session_id, body.space_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         async def stream() -> AsyncIterator[str]:
             # 锁必须在生成器里拿：拿到之前不占住请求，前端能立刻看到响应头
@@ -420,12 +605,18 @@ def create_app() -> FastAPI:
         call_id: str, body: ApprovalAnswer, request: Request
     ) -> dict[str, Any]:
         broker: ApprovalBroker = request.app.state.broker
-        if not broker.resolve(call_id, body.allow):
+        if not broker.resolve(call_id, body.allow, body.kind, body.path):
             raise HTTPException(
                 status_code=404,
                 detail="没有等待中的审批：可能已超时、已回答，或 call_id 不对",
             )
-        return {"resolved": True, "call_id": call_id, "allow": body.allow}
+        return {
+            "resolved": True,
+            "call_id": call_id,
+            "allow": body.allow,
+            "kind": body.kind if body.allow else "once",
+            "path": body.path if body.allow else "",
+        }
 
     # ---- 前端（可选）----
     # 构建过才挂载：开发阶段前端跑在 vite 的 5173，后端不需要知道它的存在。
@@ -439,15 +630,14 @@ def create_app() -> FastAPI:
         async def index() -> FileResponse:
             return FileResponse(STATIC_DIR / "index.html")
 
-        # /console 和 /extensions 是同一个 SPA 的第二、三个入口：
-        # 前端按 pathname 渲染控制台页 / 扩展中心页。返回同一个 index.html，
-        # 静态资源仍然只从 /assets 拿
+        # /console/* 和 /extensions 是同一个 SPA 的多入口：前端按 pathname
+        # 渲染对应页面。后台是多页结构（总览/流水/工具/会话/扩展），
+        # 所以 /console 下的所有子路径都要回落到 index.html，否则刷新 404。
+        # 返回同一个 index.html，静态资源仍然只从 /assets 拿
+        @app.get("/console/{rest:path}", include_in_schema=False)
         @app.get("/console", include_in_schema=False)
-        async def console_index() -> FileResponse:
-            return FileResponse(STATIC_DIR / "index.html")
-
         @app.get("/extensions", include_in_schema=False)
-        async def extensions_index() -> FileResponse:
+        async def admin_index(rest: str = "") -> FileResponse:
             return FileResponse(STATIC_DIR / "index.html")
 
     else:

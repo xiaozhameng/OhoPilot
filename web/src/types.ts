@@ -16,6 +16,14 @@ export type EventType =
   | "error"
   | "done";
 
+/** 审批时可以选的一个授权范围（第 32 步）。
+ *  once = 仅本次；file = 这个文件；dir = 这个目录及子目录。 */
+export interface ApprovalOption {
+  kind: "once" | "file" | "dir";
+  label: string;
+  path: string;
+}
+
 /** 后端推送的原始事件：type 加扁平的字段。缺哪个字段取决于 type。 */
 export interface RawEvent {
   type: EventType;
@@ -23,6 +31,8 @@ export interface RawEvent {
   id?: string;
   name?: string;
   arguments?: Record<string, unknown>;
+  /** approval_request 专属：允许时可选的授权范围 */
+  options?: ApprovalOption[];
   content?: string;
   is_error?: boolean;
   reason?: string;
@@ -51,6 +61,11 @@ export interface ConsoleOverview {
     total_tokens: number;
     prompt_tokens: number;
     completion_tokens: number;
+    /** 缓存命中/未命中的输入 token（控制台分析化后新记；老数据为 0） */
+    cache_hit_tokens: number;
+    cache_miss_tokens: number;
+    /** 思考模型的隐藏输出（DeepSeek-R1 / o 系列） */
+    reasoning_tokens: number;
   }>;
   tool_stats: Array<{
     name: string;
@@ -62,7 +77,21 @@ export interface ConsoleOverview {
   }>;
   tool_calls_total: number;
   tool_errors_total: number;
-  by_session: Array<{ session_id: string; llm_calls: number; total_tokens: number }>;
+  by_session: Array<{
+    session_id: string;
+    /** 用户起的别名（空串 = 没起过，界面回退到 title） */
+    alias: string;
+    /** 首句用户提问，天生就是最直观的标题 */
+    title: string;
+    /** 会话首条 / 最后一条消息时间（ISO 字符串） */
+    created_at: string;
+    updated_at: string;
+    llm_calls: number;
+    total_tokens: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    tool_calls: number;
+  }>;
   /** 近 14 天趋势（第 29 步）：空日子也有一行，方便画图 */
   trend: Array<{ date: string; llm_calls: number; tokens: number; tool_calls: number }>;
   /** 最近的工具失败样本：报错原文前 200 字，控制台排障第一入口 */
@@ -74,20 +103,70 @@ export interface ConsoleOverview {
   }>;
 }
 
-/** 控制台会话下钻：GET /console/sessions/{id} 的返回结构 */
+/** 一次模型调用的流水行（GET /console/calls）。 */
+export interface LlmCallRow {
+  id: number;
+  session_id: string;
+  created_at: string;
+  round_no: number;
+  model: string;
+  prompt_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  duration_ms: number;
+  first_token_ms: number;
+  finish_reason: string;
+  reasoning_tokens: number;
+  req_messages: number;
+  req_tools: number;
+  ctx_system: number;
+  ctx_history: number;
+  ctx_question: number;
+  ctx_tool_results: number;
+}
+
+/** 单次调用的请求快照（GET /console/llm-calls/{id}）。snapshot 是 messages JSON。 */
+export interface CallSnapshot {
+  id: number;
+  created_at: string;
+  model: string;
+  req_messages: number;
+  req_tools: number;
+  snapshot: unknown | { truncated: boolean; head: string; tail: string } | null;
+}
+
+/** 控制台会话下钻：GET /console/api/sessions/{id} 的返回结构（带轮次） */
 export interface SessionDetail {
   session_id: string;
+  /** 别名 / 首句标题 / 首末时间 / 消息条数（第 32 步） */
+  alias: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: number;
   llm_calls: Array<{
+    id: number;
     round_no: number;
     created_at: string;
     model: string;
     prompt_tokens: number;
+    cache_hit_tokens: number;
+    cache_miss_tokens: number;
     completion_tokens: number;
     total_tokens: number;
     duration_ms: number;
     first_token_ms: number;
+    finish_reason: string;
+    reasoning_tokens: number;
+    req_messages: number;
+    req_tools: number;
+    /** 这一轮用户问的是什么（后端从快照解析的 160 字摘要；老数据/截断快照为空） */
+    last_user_text: string;
   }>;
   tool_calls: Array<{
+    round_no: number;
     created_at: string;
     name: string;
     is_error: boolean;
@@ -165,9 +244,25 @@ export interface ChatMessage {
 
 export interface SessionSummary {
   session_id: string;
+  /** 用户起的别名；空串表示没起，展示 title */
+  alias: string;
   title: string;
+  created_at: string;
   updated_at: string;
   messages: number;
+  /** 所属空间（第 34 步）。老数据后端兜 1 = 默认空间 */
+  space_id: number;
+}
+
+/** 空间：会话的一级分组，可绑定一个本地文件夹（元数据）。 */
+export interface Space {
+  id: number;
+  name: string;
+  /** 绑定的本地目录；空串 = 没绑 */
+  folder: string;
+  created_at: string;
+  /** 该空间下的会话数 */
+  sessions: number;
 }
 
 export interface Health {
@@ -183,6 +278,32 @@ export interface PendingApproval {
   name: string;
   args: Record<string, unknown>;
   reason: string;
+  /** 允许时可以选的范围；缺省表示只能允许/拒绝 */
+  options: ApprovalOption[];
+}
+
+/** 一条目录白名单（GET /console/api/grants）。 */
+export interface DirectoryGrant {
+  id: string;
+  tool: string;
+  path: string;
+  kind: "file" | "dir";
+  created_at: string;
+  label: string;
+}
+
+/** 长期记忆文件（GET/PUT /console/api/memory）。 */
+export interface MemoryFile {
+  /** 落盘位置，用户想手改时能找到 */
+  path: string;
+  content: string;
+  /** 文件总字符数 */
+  chars: number;
+  /** 去掉注释、截断后实际会注入系统提示的字符数 */
+  injected_chars: number;
+  /** 注入上限（超出部分模型看不到） */
+  limit: number;
+  file_limit: number;
 }
 
 /** 后端历史里只有 role/content（工具往返不落库），回放时转成单块消息。 */

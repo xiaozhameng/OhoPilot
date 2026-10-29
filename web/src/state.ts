@@ -6,10 +6,20 @@
  * 收敛成一个纯函数 applyEvent(message, event) 之后，任何一个事件的处理都能单独推理。
  */
 
-import type { Block, ChatMessage, PendingApproval, RawEvent, SessionSummary, TodoItem } from "./types";
+import type {
+  Block,
+  ChatMessage,
+  PendingApproval,
+  RawEvent,
+  SessionSummary,
+  Space,
+  TodoItem,
+} from "./types";
 
 export interface ChatState {
   sessions: SessionSummary[];
+  /** 空间：侧栏按它分组；新建会话时用 activeSpaceId 决定归属 */
+  spaces: Space[];
   sessionId: string | null;
   messages: ChatMessage[];
   streaming: boolean;
@@ -22,6 +32,7 @@ export interface ChatState {
 
 export const initialState: ChatState = {
   sessions: [],
+  spaces: [],
   sessionId: null,
   messages: [],
   streaming: false,
@@ -34,6 +45,9 @@ export const initialState: ChatState = {
 
 export type Action =
   | { type: "sessions"; sessions: SessionSummary[] }
+  | { type: "spaces"; spaces: Space[] }
+  /** 侧栏就地改名成功后同步列表（不动其他字段） */
+  | { type: "session-alias"; sessionId: string; alias: string }
   | { type: "open"; sessionId: string; messages: ChatMessage[] }
   | { type: "new-session" }
   | { type: "send"; text: string; assistantId: string }
@@ -139,6 +153,17 @@ export function reducer(state: ChatState, action: Action): ChatState {
     case "sessions":
       return { ...state, sessions: action.sessions };
 
+    case "spaces":
+      return { ...state, spaces: action.spaces };
+
+    case "session-alias":
+      return {
+        ...state,
+        sessions: state.sessions.map((s) =>
+          s.session_id === action.sessionId ? { ...s, alias: action.alias } : s,
+        ),
+      };
+
     case "open":
       return {
         ...state,
@@ -191,6 +216,7 @@ export function reducer(state: ChatState, action: Action): ChatState {
               name: event.name ?? "未知工具",
               args: event.arguments ?? {},
               reason: event.reason ?? "",
+              options: event.options ?? [],
             },
           ],
         };

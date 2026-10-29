@@ -158,6 +158,7 @@ class Runtime:
                     is_err,
                     duration_ms=event.data.get("duration_ms"),
                     error_excerpt=event.data.get("content", "")[:200] if is_err else None,
+                    round_no=event.data.get("round_no", 0),
                 )
                 if event.data.get("name", "").startswith("todo_"):
                     # 清单工具刚改完库，追加一条全量快照事件给界面。
@@ -179,7 +180,15 @@ class Runtime:
                     duration_ms=event.data.get("duration_ms", 0),
                     first_token_ms=event.data.get("first_token_ms", 0),
                     context=event.data.get("context"),
+                    finish_reason=event.data.get("finish_reason", ""),
+                    reasoning_tokens=event.data.get("reasoning_tokens", 0),
+                    req_messages=event.data.get("req_messages", 0),
+                    req_tools=event.data.get("req_tools", 0),
+                    req_snapshot=event.data.get("req_snapshot"),
                 )
+                # 请求体快照只落库，不进 SSE：对话内容不该广播到界面事件流，
+                # 控制台想看时按 call id 单独拉（GET /console/llm-calls/{id}）
+                event.data.pop("req_snapshot", None)
             elif event.type == "done":
                 # agent 不知道自己在哪个会话里，done 统一由 Runtime 发
                 continue
